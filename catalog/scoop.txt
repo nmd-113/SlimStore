@@ -1,0 +1,13 @@
+# Canonical WinGet ID | official Scoop bucket | manifest name | installed icon executable
+BlenderFoundation.Blender|extras|blender|blender.exe
+DBeaver.DBeaver.Community|extras|dbeaver|dbeaver.exe
+Fastfetch-cli.Fastfetch|main|fastfetch|fastfetch.exe
+Inkscape.Inkscape|extras|inkscape|bin/inkscape.exe
+KDE.Dolphin|extras|dolphin|bin/dolphin.exe
+KDE.Kate|extras|kate|bin/kate.exe
+KDE.Kdenlive|extras|kdenlive|bin/kdenlive.exe
+KDE.Okular|extras|okular|bin/okular.exe
+Kitware.CMake|main|cmake|bin/cmake-gui.exe
+Neovim.Neovim|main|neovim|bin/nvim.exe
+PuTTY.PuTTY|extras|putty|putty.exe
+WinDirStat.WinDirStat|extras|windirstat|WinDirStat.exe

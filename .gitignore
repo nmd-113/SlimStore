@@ -1,0 +1,8 @@
+/target/
+/.tools/
+/dist/
+/release/
+/SlimStore-data/
+/verification/
+*.pdb
+__pycache__/

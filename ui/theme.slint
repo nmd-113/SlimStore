@@ -1,0 +1,17 @@
+export global Colors {
+    in property <bool> dark: false;
+    out property <color> bg: dark ? #11151e : #f4f6fa;
+    out property <color> panel: dark ? #1a202c : #ffffff;
+    out property <color> text: dark ? #eef0fb : #18213a;
+    out property <color> muted: dark ? #a5acc2 : #68718a;
+    out property <color> border: dark ? #2d3345 : #e4e7f0;
+    out property <color> elevated: dark ? #202536 : #f0f2f7;
+    out property <color> scroll-track: dark ? #1a1e29 : #eceef3;
+    out property <color> scroll-thumb: dark ? #69738a : #9aa2b2;
+    in-out property <color> accent: #7163ed;
+    out property <color> accent-ink: dark ? accent.mix(#ffffff, 22%) : accent.mix(#17213a, 26%);
+    out property <length> page-padding: 24px;
+    out property <length> card-gap: 16px;
+    out property <length> card-radius: 12px;
+}
+

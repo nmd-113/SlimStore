@@ -1,0 +1,15 @@
+# UniGetUI database snapshot ce8ef7b5ded0341f72c4d806fb4d0bd483dbc866. See docs/ARTWORK.md.
+# Exact WinGet package ID | UniGetUI key | artwork HTTPS URL | SHA-256
+DigitalScholar.Zotero|zotero|https://www.zotero.org/static/images/icons/zotero-app-icon-256.png|30c76a7a6441884df75567287db08ee40be6b763af7309f452a434800e069cd4
+KDE.Dolphin|dolphin|https://community.chocolatey.org/content/packageimages/dolphin.5.0.0.20201120.png|75352a58fa2f6d309a2f1d16ebb6a5e81ca1eabc4a0ebeeb72add40803ba81eb
+KDE.Kate|kate|https://community.chocolatey.org/content/packageimages/kate.22.12.1.png|53a41a1c0e34e97c7de99b72f9f4e8b67736238d2793214fc8b518d85991d211
+KDE.Kdenlive|kdenlive|https://invent.kde.org/multimedia/kdenlive/-/raw/master/data/icons/256-apps-kdenlive.png|22a01b4f7e1e4a858fdf9c4f095884cadb040de7349be665d3001c2c125600f1
+KDE.Okular|okular|https://community.chocolatey.org/content/packageimages/okular.22.08.1.png|c4fc8bf9653cd18a2a24623b68341a48dc6b75abad0eaf8c9922664dbfff751d
+Microsoft.PowerShell|powershell|https://upload.wikimedia.org/wikipedia/commons/a/af/PowerShell_Core_6.0_icon.png|a94f6b13951ff7a27b8a41313f8079c7c2fe75fdbcf9e84058ea21ec06ec34e7
+Microsoft.Sysinternals.Autoruns|autoruns|https://i.ibb.co/hF170wpM/2021-12-16-ts3-thumbs-dfe-p-256.png|bece9cd77813dea83ec78676ee343f968c74a73adabda3ee3b825170a8554af1
+mRemoteNG.mRemoteNG|mremoteng|https://community.chocolatey.org/content/packageimages/mRemoteNG.1.76.20.24615.png|65762dd2a06c3e02cf3027513398394240c5e91517d98d945aad93675108458a
+Neovim.Neovim|neovim|https://community.chocolatey.org/content/packageimages/neovim.0.8.3.png|0a2ae58b65df79076726e7c446531e4f567d1d3047a2be1e726e149cd44cd54f
+PrismLauncher.PrismLauncher|prismlauncher|https://unigeticons.meowcat285.com/prismlauncher.8.4.20240820.png|d985bddccc0ca6d22964d6466cebc70d9fc1943acf5aa352d57401e1378b2528
+Scribus.Scribus|scribus|https://wiki.scribus.net/wiki/images/thumb/f/f1/Scribusicon-blue.png/200px-Scribusicon-blue.png|4a48907582c7d86819150a88f336f4baf49b311f67e3e522bf9e3dc79cd09345
+ShareX.ShareX|sharex|https://community.chocolatey.org/content/packageimages/sharex.16.1.0.png|2f600cfa30a5ae94d1217bb776eef0182161d9b225d3f663a0e0cea4c7b8e13e
+VideoLAN.VLC|vlc|https://i.imgur.com/k4W1Nm1.png|54cafb482b4b359e6bb0285d342248aec41fada294ac746c9f9c4c7542016af5

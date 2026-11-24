@@ -1,0 +1,98 @@
+import { ScrollView } from "std-widgets.slint";
+import { Colors } from "theme.slint";
+
+// Keeps the standard combo box interaction model. The popup uses SlimStore surfaces.
+export component AppCombo inherits Rectangle {
+    in property <[string]> model;
+    in property <length> window-height;
+    in-out property <int> current-index: 0;
+    callback selected(string);
+    property <bool> popup-focused: false;
+    property <length> row-height: 34px;
+    property <length> popup-height: min(7, root.model.length) * root.row-height + 8px;
+    property <string> value: root.model.length == 0 ? "" : root.model[root.current-index];
+    min-width: 124px;
+    height: 36px;
+    border-width: 1px;
+    border-radius: 8px;
+    border-color: focus.has-focus || root.popup-focused ? Colors.accent : Colors.border;
+    background: pointer.pressed ? Colors.border : pointer.has-hover ? Colors.elevated : Colors.panel;
+    forward-focus: focus;
+
+    function choose(index: int) {
+        if root.model.length > 0 && index != root.current-index {
+            root.current-index = clamp(index, 0, root.model.length - 1);
+            root.selected(root.value);
+        }
+    }
+
+    accessible-role: combobox;
+    accessible-expandable: true;
+    accessible-expanded: root.popup-focused;
+    accessible-value: root.value;
+    accessible-action-expand => { popup.show(); }
+
+    HorizontalLayout { padding-left: 11px; padding-right: 10px; spacing: 8px;
+        Text { text: root.value; color: Colors.text; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+        Rectangle { width: 14px;
+            Path { width: 12px; height: 8px; x: 1px; y: (parent.height - self.height) / 2; viewbox-width: 12; viewbox-height: 8; stroke: Colors.muted; stroke-width: 1.4px; commands: "M1 2 L6 7 L11 2"; }
+        }
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " { popup.show(); return accept; }
+            if event.text == Key.UpArrow { root.choose(root.current-index - 1); return accept; }
+            if event.text == Key.DownArrow { root.choose(root.current-index + 1); return accept; }
+            return reject;
+        }
+    }
+    pointer := TouchArea { clicked => { focus.focus(); popup.show(); } }
+
+    popup := PopupWindow {
+        width: root.width;
+        height: root.popup-height;
+        y: root.absolute-position.y + root.height + self.height + 12px <= root.window-height
+            ? root.height + 4px : -self.height - 4px;
+        close-policy: close-on-click-outside;
+        forward-focus: choices;
+        choices := FocusScope {
+            changed has-focus => { root.popup-focused = self.has-focus; }
+            key-pressed(event) => {
+                if event.text == Key.UpArrow || event.text == Key.DownArrow {
+                    root.choose(root.current-index + (event.text == Key.DownArrow ? 1 : -1));
+                    let row-y = root.current-index * root.row-height;
+                    let bottom = row-y + root.row-height + 8px;
+                    menu.content-y = min(-max(0px, bottom - menu.visible-height), max(-row-y, menu.content-y));
+                    return accept;
+                }
+                if event.text == Key.Return || event.text == Key.Escape { popup.close(); return accept; }
+                return reject;
+            }
+            Rectangle {
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Colors.border;
+                background: Colors.panel;
+                clip: true;
+                menu := ScrollView {
+                    content-y: -max(0, root.current-index - 6) * root.row-height;
+                    horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                    VerticalLayout { padding: 4px; padding-right: root.model.length > 7 ? 16px : 4px; spacing: 0px;
+                        for entry[index] in root.model: Rectangle {
+                            height: root.row-height;
+                            border-radius: 5px;
+                            background: option.has-hover ? Colors.elevated
+                                : index == root.current-index ? Colors.accent.mix(Colors.panel, 20%) : transparent;
+                            Text { x: 8px; width: parent.width - 16px; height: parent.height; text: entry; color: index == root.current-index ? Colors.accent-ink : Colors.text; overflow: elide; vertical-alignment: center; }
+                            option := TouchArea { clicked => { root.choose(index); popup.close(); } }
+                            accessible-role: button;
+                            accessible-label: entry;
+                            accessible-action-default => { root.choose(index); popup.close(); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

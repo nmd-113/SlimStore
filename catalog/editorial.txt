@@ -1,0 +1,137 @@
+# Exact WinGet ID | Category | Featured/Essential or empty | Editorial summary
+Mozilla.Firefox|Browsers|Featured|A browser with customizable privacy controls, extensions, and cross-device sync.
+Microsoft.VisualStudioCode|Development|Featured|A code editor with integrated debugging, Git support, and extensions.
+VideoLAN.VLC|Multimedia|Featured|Play local media, discs, and network streams in many formats.
+7zip.7zip|Compression|Essential|Create, open, and extract compressed archives, including the 7z format.
+Microsoft.PowerToys|Utilities|Essential|Windows tools for window layouts, batch renaming, and keyboard shortcuts.
+Bitwarden.Bitwarden|Security|Essential|A password vault for credentials, secure notes, and passkeys.
+Obsidian.Obsidian|Productivity||
+OBSProject.OBSStudio|Multimedia|Featured|Record or stream video with composited scenes and multiple inputs.
+ShareX.ShareX|Utilities|Essential|
+Git.Git|Development|Essential|Track changes, collaborate, and manage branches with Git for Windows.
+Microsoft.WindowsTerminal|Development|Essential|A tabbed terminal for PowerShell, Command Prompt, and WSL.
+Notepad++.Notepad++|Development|Essential|
+Valve.Steam|Gaming|Featured|
+Discord.Discord|Communication|Featured|
+Microsoft.Teams|Communication|Featured|Join meetings, chat, and collaborate with your team.
+TeamViewer.TeamViewer|Networking||Connect to another computer for remote access or support.
+GIMP.GIMP.3|Graphics & Design|Featured|
+Inkscape.Inkscape|Graphics & Design|Featured|
+BlenderFoundation.Blender|Graphics & Design|Featured|
+Microsoft.Sysinternals.ProcessExplorer|System Tools||
+GeoGebra.Classic|Education||
+WiresharkFoundation.Wireshark|Networking||
+WinSCP.WinSCP|File Management||
+Google.Chrome|Browsers||
+Brave.Brave|Browsers||
+Vivaldi.Vivaldi|Browsers||
+Opera.Opera|Browsers||
+Microsoft.Edge|Browsers||
+Python.Python.3.14|Development||
+OpenJS.NodeJS.LTS|Development||
+Rustlang.Rustup|Development||
+GitHub.GitHubDesktop|Development||
+JetBrains.IntelliJIDEA.Community|Development||
+Kitware.CMake|Development||
+Neovim.Neovim|Development||
+SublimeHQ.SublimeText.4|Development||
+Docker.DockerDesktop|Development||
+DBeaver.DBeaver.Community|Development||
+EpicGames.EpicGamesLauncher|Gaming||
+GOG.Galaxy|Gaming||
+PrismLauncher.PrismLauncher|Gaming||
+Libretro.RetroArch|Gaming||
+OpenTTD.OpenTTD|Gaming||
+Mojang.MinecraftLauncher|Gaming||
+Audacity.Audacity|Multimedia||
+HandBrake.HandBrake|Multimedia||
+MusicBrainz.Picard|Multimedia||
+Jellyfin.JellyfinMediaPlayer|Multimedia||
+KDE.Kdenlive|Multimedia||
+Meltytech.Shotcut|Multimedia||
+TheDocumentFoundation.LibreOffice|Productivity|Essential|
+SumatraPDF.SumatraPDF|Productivity||
+Joplin.Joplin|Productivity||
+DigitalScholar.Zotero|Productivity||
+ONLYOFFICE.DesktopEditors|Productivity||
+calibre.calibre|Productivity||
+PDFsam.PDFsam|Productivity||
+voidtools.Everything|Utilities||
+Rufus.Rufus|Utilities||
+Fastfetch-cli.Fastfetch|System Tools||
+CrystalDewWorld.CrystalDiskInfo|System Tools||
+CrystalDewWorld.CrystalDiskMark|System Tools||
+CPUID.CPU-Z|System Tools||
+WinDirStat.WinDirStat|File Management||
+AntibodySoftware.WizTree|File Management||
+KDE.Dolphin|File Management||
+FilesCommunity.Files|File Management||
+MarekJasinski.FreeCommanderXE|File Management||
+RARLab.WinRAR|Compression||
+Giorgiotani.Peazip|Compression||
+KeePassXCTeam.KeePassXC|Security||
+DominikReichl.KeePass|Security||
+Yubico.YubikeyManager|Security||
+Proton.ProtonVPN|Networking||
+Tailscale.Tailscale|Networking||
+WireGuard.WireGuard|Networking||
+PuTTY.PuTTY|Networking||
+Syncthing.Syncthing|Networking||
+qBittorrent.qBittorrent|Networking||
+Mozilla.Thunderbird|Communication||
+OpenWhisperSystems.Signal|Communication||
+Telegram.TelegramDesktop|Communication||
+Zoom.Zoom|Communication||
+SlackTechnologies.Slack|Communication||
+Element.Element|Communication||
+KDE.Krita|Graphics & Design||
+FreeCAD.FreeCAD|Graphics & Design||
+darktable.darktable|Graphics & Design||
+RawTherapee.RawTherapee|Graphics & Design||
+Anki.Anki|Education||
+Stellarium.Stellarium|Education||
+Musescore.Musescore|Education||
+MITMediaLab.Scratch.3|Education||
+Microsoft.VisualStudio.2022.Community|Development||
+Microsoft.PowerShell|Development||
+Microsoft.DotNet.SDK.10|Development||
+LLVM.LLVM|Development||
+GNU.Nano|Development||
+KDE.Kate|Development||
+Scribus.Scribus|Graphics & Design||
+KDE.digiKam|Graphics & Design||
+KDE.Okular|Productivity||
+KDE.KDEConnect|Networking||
+KDE.KStars|Education||
+OpenShot.OpenShot|Multimedia||
+Avidemux.Avidemux|Multimedia||
+clsid2.mpc-hc|Multimedia||
+Spotify.Spotify|Multimedia||
+Plex.Plex|Multimedia||
+Stremio.Stremio|Multimedia||
+Rclone.Rclone|File Management||
+qarmin.czkawka.gui|File Management||
+Microsoft.Sysinternals.Autoruns|System Tools||
+Microsoft.Sysinternals.ProcessMonitor|System Tools||
+Microsoft.Sysinternals.TCPView|Networking||
+Devolutions.UniGetUI|Utilities||
+Greenshot.Greenshot|Utilities||
+HermannSchinagl.LinkShellExtension|File Management||
+mRemoteNG.mRemoteNG|Networking||
+OpenVPNTechnologies.OpenVPN|Networking||
+WinMerge.WinMerge|File Management||
+Cryptomator.Cryptomator|Security||
+IDRIX.VeraCrypt|Security||
+Ubisoft.Connect|Gaming||
+ElectronicArts.EADesktop|Gaming||
+OSGeo.QGIS|Education||
+RProject.R|Education||
+Posit.RStudio|Development||
+Google.EarthPro|Education||
+Mozilla.Firefox.ESR|Browsers||
+LibreWolf.LibreWolf|Browsers||
+Zen-Team.Zen-Browser|Browsers||
+Betterbird.Betterbird|Communication||
+GnuPG.GnuPG|Security||
+Bandisoft.Bandizip|Compression||
+M2Team.NanaZip|Compression||

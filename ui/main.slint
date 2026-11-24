@@ -1,0 +1,890 @@
+import { Colors } from "theme.slint";
+import { AppCombo } from "combo.slint";
+import { Artwork, PackageScreenshot } from "artwork.slint";
+export { Artwork }
+import { Button, LineEdit, CheckBox, ScrollView, ListView, ProgressIndicator, Palette } from "std-widgets.slint";
+
+export struct AppItem { id: string, name: string, publisher: string, description: string, publisher-description: string, summary: string, license: string, website: string, notes: string, art-id: string, icon-slot: int, installed-version: string, available-version: string, source: string, status: string, status-version: string, initials: string, category: string, selected: bool, actionable: bool, tint: color }
+export struct AppRow { first: AppItem, second: AppItem, third: AppItem }
+export struct ActivityItem { key: string, title: string, status: string, summary: string, detail: string, cancellable: bool, reviewable: bool }
+
+component NavButton inherits Rectangle {
+    in property <string> label;
+    in property <image> glyph;
+    in property <bool> active;
+    callback clicked();
+    public pure function contains(x: length, y: length) -> bool {
+        return x >= root.absolute-position.x && x < root.absolute-position.x + root.width
+            && y >= root.absolute-position.y && y < root.absolute-position.y + root.height;
+    }
+    height: 42px;
+    border-radius: 8px;
+    background: active ? (Colors.dark ? #29294d : #ece9ff) : area.has-hover ? (Colors.dark ? #232838 : #eceef5) : transparent;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: Colors.accent-ink;
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    HorizontalLayout { padding-left: 15px; padding-right: 10px; spacing: 13px;
+        Rectangle { width: 18px;
+            Image { source: root.glyph; width: 18px; height: 18px; y: (parent.height - self.height) / 2; colorize: root.active ? Colors.accent-ink : Colors.muted; image-fit: contain; }
+        }
+        Text { text: root.label; color: root.active ? Colors.accent-ink : Colors.text; font-size: 13px; font-weight: root.active ? 600 : 400; vertical-alignment: center; }
+    }
+    area := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { root.clicked(); }
+}
+
+component AppScrollRail inherits Rectangle {
+    in property <length> page-size;
+    in property <length> content-height;
+    in-out property <length> content-y;
+    property <length> maximum: max(0px, root.content-height - root.page-size);
+    property <length> thumb-height: root.maximum <= 0px ? root.height : min(root.height, max(32px, root.height * root.page-size / max(1px, root.content-height)));
+    property <length> thumb-y: root.maximum <= 0px ? 0px : (root.height - root.thumb-height) * (-root.content-y / root.maximum);
+    property <length> drag-start-y: 0px;
+    property <length> drag-start-scroll: 0px;
+    property <bool> dragging: false;
+    visible: root.maximum > 0px;
+    Rectangle { x: 0px; width: 14px; height: root.height; background: Colors.scroll-track; border-radius: 7px; }
+    Rectangle { x: (root.width - (touch.has-hover ? 10px : 8px)) / 2; y: root.thumb-y; width: touch.has-hover ? 10px : 8px; height: root.thumb-height; background: touch.has-hover ? Colors.accent : Colors.scroll-thumb; border-radius: 6px; animate width, x, background { duration: 100ms; } }
+    touch := TouchArea {
+        scroll-event(event) => {
+            root.content-y = clamp(root.content-y + event.delta-y, -root.maximum, 0px);
+            return accept;
+        }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.drag-start-y = self.mouse-y;
+                root.drag-start-scroll = root.content-y;
+                root.dragging = false;
+            }
+        }
+        moved => {
+            if self.pressed && root.maximum > 0px {
+                root.dragging = true;
+                root.content-y = max(-root.maximum, min(0px, root.drag-start-scroll - (self.mouse-y - root.drag-start-y) * root.maximum / max(1px, root.height - root.thumb-height)));
+            }
+        }
+        clicked => {
+            if !root.dragging && root.maximum > 0px && (self.mouse-y < root.thumb-y || self.mouse-y > root.thumb-y + root.thumb-height) {
+                let track-position = max(0px, min(root.height - root.thumb-height, self.mouse-y - root.thumb-height / 2));
+                root.content-y = -root.maximum * track-position / max(1px, root.height - root.thumb-height);
+            }
+            root.dragging = false;
+        }
+    }
+}
+
+component AppScrollArea inherits Rectangle {
+    in-out property <length> content-y <=> scroll.content-y;
+    out property <length> content-height <=> scroll.content-height;
+    out property <length> visible-height <=> scroll.visible-height;
+    out property <length> visible-width <=> scroll.visible-width;
+    scroll := ScrollView {
+        x: 0px; y: 0px;
+        width: max(1px, root.width - 40px);
+        height: root.height;
+        content-width: self.width;
+        vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+        @children
+    }
+    AppScrollRail { x: root.width - 26px; y: 0px; width: 14px; height: root.height; page-size: root.visible-height; content-height: root.content-height; content-y <=> root.content-y; }
+}
+
+component CaptionButton inherits Rectangle {
+    in property <string> label;
+    in property <int> glyph;
+    in property <bool> native-hover;
+    in property <bool> native-pressed;
+    callback clicked();
+    width: 44px;
+    property <bool> highlighted: area.has-hover || root.native-hover || root.native-pressed;
+    property <color> ink: root.glyph == 3 && root.highlighted ? white : Colors.text;
+    background: root.highlighted ? (root.glyph == 3 ? (area.pressed ? #a4241a : #c42b1c)
+        : (area.pressed || root.native-pressed ? Colors.border : Colors.elevated)) : transparent;
+    Rectangle {
+        width: 12px; height: 12px;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        if root.glyph == 0: Rectangle { x: 1px; y: 6px; width: 10px; height: 1px; background: root.ink; }
+        if root.glyph == 1: Rectangle { x: 1px; y: 1px; width: 10px; height: 10px; border-width: 1px; border-color: root.ink; }
+        if root.glyph == 2: Rectangle { x: 3px; y: 0px; width: 9px; height: 9px; border-width: 1px; border-color: root.ink; }
+        if root.glyph == 2: Rectangle { x: 0px; y: 3px; width: 9px; height: 9px; border-width: 1px; border-color: root.ink; background: root.background == transparent ? Colors.panel : root.background; }
+        if root.glyph == 3: Path { width: 12px; height: 12px; viewbox-width: 12; viewbox-height: 12; stroke: root.ink; stroke-width: 1px; commands: "M1.5 1.5 L10.5 10.5 M10.5 1.5 L1.5 10.5"; }
+    }
+    area := TouchArea { clicked => { root.clicked(); } }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+}
+
+component HeaderIconButton inherits Rectangle {
+    in property <image> glyph;
+    in property <string> label;
+    in property <string> count;
+    in property <bool> enabled: true;
+    callback clicked();
+    width: root.count == "" ? 40px : 64px;
+    height: 38px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: focus.has-focus ? Colors.accent : Colors.border;
+    background: area.pressed ? Colors.border : area.has-hover ? Colors.elevated : Colors.panel;
+    forward-focus: focus;
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 5px;
+        Rectangle { width: 18px;
+            Image { source: root.glyph; width: 18px; height: 18px; x: 0; y: (parent.height - self.height) / 2; colorize: root.enabled ? Colors.text : Colors.muted; opacity: root.enabled ? 1 : 0.5; image-fit: contain; }
+        }
+        if root.count != "": Text { text: root.count; color: Colors.accent-ink; font-size: 12px; vertical-alignment: center; }
+    }
+    area := TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.clicked(); } }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+}
+
+component LayoutToggle inherits Rectangle {
+    in-out property <bool> list-mode: false;
+    forward-focus: focus;
+    border-width: focus.has-focus ? 1px : 0px;
+    border-color: Colors.accent;
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.LeftArrow { root.list-mode = false; return accept; }
+            if event.text == Key.RightArrow { root.list-mode = true; return accept; }
+            if event.text == Key.Return || event.text == " " { root.list-mode = !root.list-mode; return accept; }
+            return reject;
+        }
+    }
+    width: 116px;
+    height: 36px;
+    border-radius: 8px;
+    background: Colors.elevated;
+    Rectangle { x: root.list-mode ? 58px : 2px; y: 2px; width: 56px; height: 32px; border-radius: 6px; background: Colors.panel; border-width: 1px; border-color: Colors.border; animate x { duration: 120ms; } }
+    HorizontalLayout { padding: 2px;
+        TouchArea { width: 56px; height: 32px; clicked => { focus.focus(); root.list-mode = false; }
+            Text { text: "Grid"; color: !root.list-mode ? Colors.accent-ink : Colors.muted; font-size: 12px; font-weight: !root.list-mode ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; width: parent.width; height: parent.height; }
+        }
+        TouchArea { width: 56px; height: 32px; clicked => { focus.focus(); root.list-mode = true; }
+            Text { text: "List"; color: root.list-mode ? Colors.accent-ink : Colors.muted; font-size: 12px; font-weight: root.list-mode ? 600 : 400; horizontal-alignment: center; vertical-alignment: center; width: parent.width; height: parent.height; }
+        }
+    }
+    accessible-role: button;
+    accessible-label: root.list-mode ? "List view selected" : "Grid view selected";
+    accessible-action-default => { root.list-mode = !root.list-mode; }
+}
+
+component AppIcon inherits Rectangle {
+    in property <AppItem> item;
+    property <bool> can-load: Artwork.online-enabled && root.item.icon-slot > 0;
+    property <bool> can-load-local: Artwork.local-enabled && root.item.icon-slot > 0;
+    property <image> local-art: Artwork.local-icons[root.item.icon-slot];
+    property <image> art: root.local-art.width > 0 ? root.local-art : root.can-load ? Artwork.online-icons[root.item.icon-slot] : @image-url("");
+    function fetch() { if root.item.icon-slot > 0 { Artwork.request-icon(root.item.icon-slot); } }
+    init => { root.fetch(); }
+    changed can-load => { root.fetch(); }
+    changed can-load-local => { root.fetch(); }
+    changed item => { root.fetch(); }
+    border-radius: 12px;
+    background: art.width > 0 ? Colors.elevated : root.item.tint;
+    if art.width > 0: Image {
+        source: root.art;
+        width: parent.width - 14px; height: parent.height - 14px;
+        x: 7px; y: 7px; image-fit: contain;
+    }
+    if art.width <= 0: Text {
+        text: root.item.initials; color: white; font-size: 17px; font-weight: 700;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component PackageStatus inherits VerticalLayout {
+    in property <AppItem> item;
+    alignment: center;
+    spacing: 2px;
+    Text { text: root.item.status; color: Colors.accent-ink; font-size: 11px; overflow: elide; }
+    if root.item.status-version != "": Text {
+        text: root.item.status-version; color: Colors.muted; font-size: 11px; overflow: elide;
+    }
+}
+
+component AppCard inherits Rectangle {
+    in property <AppItem> item;
+    in property <bool> selection-mode;
+    in property <bool> selection-enabled: true;
+    callback open(string);
+    callback select(string, bool);
+    height: 184px;
+    background: Colors.panel;
+    border-radius: Colors.card-radius;
+    border-width: 1px;
+    border-color: hover.has-hover ? Colors.accent : Colors.border;
+    animate border-color { duration: 140ms; }
+    hover := TouchArea { clicked => { root.open(root.item.id); } }
+    VerticalLayout { padding-left: 16px; padding-right: 16px; padding-top: 12px; padding-bottom: 12px; spacing: 6px;
+        HorizontalLayout { height: 56px; spacing: 8px;
+            AppIcon { width: 56px; height: 56px; item: root.item; }
+            Rectangle { min-width: 0px; height: 56px; horizontal-stretch: 1;
+                VerticalLayout { alignment: center; spacing: 2px;
+                    Text { text: root.item.name; color: Colors.text; font-size: 14px; font-weight: 600; wrap: word-wrap; overflow: elide; max-lines: 2; }
+                    if root.item.publisher != "": Text { text: root.item.publisher; color: Colors.muted; font-size: 11px; overflow: elide; }
+                }
+            }
+            if root.selection-mode && root.item.actionable: Rectangle {
+                width: 52px; height: 34px; cross-axis-self-alignment: center;
+                Text { x: 23px; width: 29px; height: parent.height; text: "Select"; font-size: 10px;
+                    color: Colors.muted; vertical-alignment: center; accessible-role: none; }
+                CheckBox {
+                    width: parent.width; height: parent.height; enabled: root.selection-enabled;
+                    accessible-label: "Select " + root.item.name; checked: root.item.selected;
+                    toggled => { root.select(root.item.id, self.checked); }
+                }
+            }
+        }
+        Text { text: root.item.description; color: Colors.muted; font-size: 12px; wrap: word-wrap; overflow: elide; max-lines: 3; height: 52px; }
+        HorizontalLayout { spacing: 8px;
+            PackageStatus { item: root.item; horizontal-stretch: 1; }
+            Button { text: "Details"; width: 84px; height: 36px; clicked => { root.open(root.item.id); } }
+        }
+    }
+    accessible-role: button;
+    accessible-label: "Details for " + item.name;
+    accessible-action-default => { root.open(root.item.id); }
+}
+
+component AppListRow inherits Rectangle {
+    in property <AppItem> item;
+    in property <bool> selection-mode;
+    in property <bool> review-mode;
+    in property <bool> selection-enabled: true;
+    callback open(string);
+    callback select(string, bool);
+    height: 78px;
+    background: Colors.panel;
+    border-radius: Colors.card-radius;
+    border-width: 1px;
+    border-color: hover.has-hover ? Colors.accent : Colors.border;
+    hover := TouchArea { clicked => { root.open(root.item.id); } }
+    HorizontalLayout { padding-left: 16px; padding-right: 16px; spacing: 14px;
+        Rectangle { width: 52px;
+            AppIcon { width: 52px; height: 52px; y: (parent.height - self.height) / 2; item: root.item; }
+        }
+        VerticalLayout { cross-axis-self-alignment: center; horizontal-stretch: 1; vertical-stretch: 0; spacing: 4px;
+            Text { text: root.item.name; color: Colors.text; font-size: 14px; font-weight: 600; overflow: elide; }
+            if root.review-mode || root.item.publisher != "": Text { text: root.review-mode ? root.item.id : root.item.publisher; color: Colors.muted; font-size: 11px; overflow: elide; }
+        }
+        PackageStatus { item: root.item; width: clamp(root.width * 0.24, 112px, 200px); }
+        if root.selection-mode: Rectangle { width: 66px;
+            if root.item.actionable: CheckBox {
+                x: 0px; y: (parent.height - self.height) / 2; height: 34px;
+                text: "Select"; checked: root.item.selected; enabled: root.selection-enabled;
+                toggled => { root.select(root.item.id, self.checked); }
+            }
+        }
+        if root.review-mode: Button {
+            cross-axis-self-alignment: center; text: "Remove"; width: 76px; height: 36px;
+            accessible-label: "Remove " + root.item.name + " from Install Queue";
+            enabled: root.selection-enabled;
+            clicked => { root.select(root.item.id, false); }
+        }
+        Button { cross-axis-self-alignment: center; text: "Details"; width: 92px; height: 36px; clicked => { root.open(root.item.id); } }
+    }
+}
+
+component AppGridCell inherits Rectangle {
+    in property <AppItem> item;
+    in property <bool> selection-mode;
+    in property <bool> selection-enabled: true;
+    callback open(string);
+    callback select(string, bool);
+    horizontal-stretch: 1;
+    height: 184px;
+    if root.item.id != "": AppCard {
+        item: root.item;
+        width: root.width;
+        height: root.height;
+        selection-mode: root.selection-mode; selection-enabled: root.selection-enabled;
+        horizontal-stretch: 1;
+        open(id) => { root.open(id); }
+        select(id, checked) => { root.select(id, checked); }
+    }
+}
+
+component AppGridRow inherits Rectangle {
+    in property <AppRow> app-row;
+    in property <bool> selection-mode;
+    in property <bool> selection-enabled: true;
+    in property <int> columns;
+    callback open(string);
+    callback select(string, bool);
+    horizontal-stretch: 1;
+    height: 200px;
+    HorizontalLayout {
+        spacing: Colors.card-gap;
+        padding-bottom: Colors.card-gap;
+        AppGridCell { item: root.app-row.first; selection-mode: root.selection-mode; selection-enabled: root.selection-enabled; open(id) => { root.open(id); } select(id, checked) => { root.select(id, checked); } }
+        AppGridCell { item: root.app-row.second; selection-mode: root.selection-mode; selection-enabled: root.selection-enabled; open(id) => { root.open(id); } select(id, checked) => { root.select(id, checked); } }
+        if root.columns >= 3: AppGridCell { item: root.app-row.third; selection-mode: root.selection-mode; selection-enabled: root.selection-enabled; open(id) => { root.open(id); } select(id, checked) => { root.select(id, checked); } }
+    }
+}
+
+component GalleryTile inherits Rectangle {
+    in property <image> source;
+    in property <string> label;
+    callback clicked();
+    width: 202px; height: 130px;
+    border-radius: Colors.card-radius;
+    background: Colors.panel;
+    border-width: 1px;
+    border-color: thumb.has-hover || focus.has-focus ? Colors.accent : Colors.border;
+    forward-focus: focus;
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Return || event.text == " " { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    VerticalLayout { padding: 8px; spacing: 4px;
+        Image { source: root.source; image-fit: contain; height: 88px; }
+        Text { text: root.label; color: Colors.text; horizontal-alignment: center; }
+    }
+    thumb := TouchArea { clicked => { focus.focus(); root.clicked(); } }
+    accessible-role: button;
+    accessible-label: "Preview " + root.label;
+    accessible-action-default => { root.clicked(); }
+}
+
+export component MainWindow inherits Window {
+    title: "SlimStore — Discover. Install. Update.";
+    icon: @image-url("../assets/SlimStore-icon.png");
+    preferred-width: 1200px;
+    preferred-height: 820px;
+    min-width: 820px;
+    min-height: 600px;
+    no-frame: true;
+    resize-border-width: 0px;
+    background: Colors.bg;
+    default-font-family: "Segoe UI";
+    default-font-size: 13px;
+    in-out property <bool> dark: false;
+    in-out property <int> page: 0;
+    in-out property <string> query;
+    in property <string> heading: "Your next favorite app is here.";
+    in property <string> subtitle: "A considered collection. A simpler Windows experience.";
+    in property <[AppRow]> rows;
+    in property <[ActivityItem]> activity;
+    in property <[string]> categories;
+    in property <[string]> collections;
+    in-out property <int> preview-index: 0;
+    property <[PackageScreenshot]> gallery: Artwork.gallery(root.detail.art-id);
+    in-out property <string> activity-log;
+    in-out property <int> category-index: 0;
+    in-out property <int> sort-index: 0;
+    in-out property <int> collection-index: 0;
+    in-out property <bool> list-mode: false;
+    out property <int> columns: root.list-mode || root.reviewing-install ? 1 : (root.width >= 1160px ? 3 : 2);
+    in property <bool> busy: false;
+    in property <string> status: "Starting WinGet…";
+    in property <string> backend-status;
+    in property <string> sources;
+    in property <string> storage-status: "Memory only · no SlimStore files are written";
+    in-out property <bool> persistent: false;
+    in-out property <bool> source-consent: false;
+    in-out property <bool> online-icons: true;
+    in-out property <bool> accent-enabled: false;
+    in-out property <int> theme-index: 0;
+    in property <int> operation-count: 0;
+    in property <string> queue-block;
+    in property <bool> queue-resumable: false;
+    in-out property <length> results-y: 0px;
+    in property <int> result-count: 0;
+    in property <bool> inventory-known: false;
+    in property <string> detail-text;
+    in property <AppItem> detail;
+    in property <string> detail-action: "Install";
+    in property <bool> detail-ready: false;
+    in property <bool> detail-installed: false;
+    in property <bool> detail-actionable: false;
+    in property <bool> detail-scoop-result: false;
+    in property <bool> detail-scoop-manifest: false;
+    in property <string> detail-scoop-note;
+    in property <string> scoop-status;
+    in property <bool> scoop-detected;
+    in property <bool> scoop-search-available;
+    in-out property <bool> scoop-catalog-cache;
+    in-out property <bool> scoop-additional-buckets;
+    in-out property <bool> details-expanded: false;
+    in-out property <bool> sources-expanded: false;
+    in property <bool> native-maximized: false;
+    in property <bool> client-border: false;
+    out property <length> header-height: 60px;
+    in property <int> install-count: 0;
+    in property <int> uninstall-count: 0;
+    in property <int> update-count: 0;
+    property <bool> install-page: root.page <= 2 || root.page == 8;
+    property <bool> reviewing-install: root.page == 9;
+    property <bool> can-select: root.install-page || root.page == 3 || root.page == 4;
+    property <int> change-count: root.page == 3 ? root.uninstall-count : root.install-count;
+    in property <bool> maximize-hover: false;
+    in property <bool> maximize-pressed: false;
+    in-out property <bool> confirm-visible: false;
+    in property <string> confirm-title;
+    in property <string> confirm-text;
+    in property <bool> confirm-agreement-required: false;
+    in property <bool> confirm-information: false;
+    in property <string> app-version;
+    in-out property <bool> package-consent: false;
+    in property <bool> can-back: false;
+    in property <color> accent: #7163ed;
+    callback navigate(int);
+    callback search(string);
+    callback filter(int, int);
+    callback search-category();
+    callback open-app(string);
+    callback select-app(string, bool);
+    callback refresh();
+    callback back();
+    callback action(string);
+    callback confirmed(bool);
+    callback cancel(string);
+    callback resume-queue();
+    callback review-operation(string);
+    callback settings-changed();
+    callback clear-cache();
+    callback link(string);
+    callback package-link(string);
+    callback smoke-step();
+    callback reflow();
+    callback minimize-window();
+    callback maximize-window();
+    callback native-theme-changed(bool);
+    changed columns => { root.results-y = 0px; root.reflow(); }
+
+    init => { Colors.dark = root.dark; Colors.accent = root.accent; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; }
+    changed dark => { Colors.dark = root.dark; Palette.color-scheme = root.dark ? ColorScheme.dark : ColorScheme.light; root.native-theme-changed(root.dark); }
+    changed accent => { Colors.accent = root.accent; }
+    changed confirm-visible => {
+        if !root.confirm-visible {
+            if root.reviewing-install { queue-nav.focus(); }
+            else if root.page == 3 { installed-nav.focus(); }
+            else if root.page == 4 { updates-nav.focus(); }
+            else { search-box.focus(); }
+        }
+    }
+
+    property <length> sidebar-width: root.width < 960px ? 178px : 218px;
+
+    public function sidebar-caption(x: length, y: length) -> bool {
+        return x < root.sidebar-width
+            && !root.confirm-visible && root.preview-index == 0 && root.activity-log == ""
+            && !home-nav.contains(x,y) && !discover-nav.contains(x,y) && !categories-nav.contains(x,y)
+            && !installed-nav.contains(x,y) && !updates-nav.contains(x,y)
+            && !downloads-nav.contains(x,y) && !queue-nav.contains(x,y) && !settings-nav.contains(x,y);
+    }
+
+    Rectangle { x: 0px; y: 0px; width: root.width; height: root.height;
+        visible: !root.confirm-visible;
+        accessible-role: groupbox;
+        accessible-label: "SlimStore workspace";
+    VerticalLayout { width: parent.width; height: parent.height; spacing: 0px;
+        Rectangle { height: root.header-height; background: Colors.panel;
+            HorizontalLayout { spacing: 0px;
+                Rectangle { width: root.sidebar-width;
+                    HorizontalLayout { padding-left: 16px; spacing: 10px;
+                        Rectangle { width: 42px;
+                            Image { source: @image-url("../assets/SlimStore-icon.png"); width: 42px; height: 42px; x: 0; y: (parent.height - self.height) / 2; image-fit: contain; }
+                        }
+                        Text { text: "SlimStore"; color: Colors.text; font-size: 22px; font-weight: 700; vertical-alignment: center; }
+                    }
+                }
+                Rectangle { width: 1px; background: Colors.border; }
+                Rectangle { horizontal-stretch: 1;
+                    HorizontalLayout { padding-left: 12px; padding-top: (root.header-height - 40px) / 2; padding-bottom: (root.header-height - 40px) / 2; spacing: 8px; alignment: stretch;
+                        HeaderIconButton { cross-axis-self-alignment: center; glyph: @image-url("../assets/back.svg"); label: "Back"; enabled: root.can-back; clicked => { root.back(); } }
+                        search-box := LineEdit { horizontal-stretch: 1; min-width: 120px; height: 40px; placeholder-text: "Search apps"; text <=> root.query; edited => { root.search(self.text); } accepted => { root.search(self.text); } }
+                        HeaderIconButton { cross-axis-self-alignment: center; glyph: @image-url("../assets/downloads.svg"); label: "Downloads and activity"; count: root.operation-count > 0 ? root.operation-count : ""; clicked => { root.navigate(5); } }
+                        HeaderIconButton { cross-axis-self-alignment: center; glyph: root.dark ? @image-url("../assets/sun.svg") : @image-url("../assets/moon.svg"); label: root.dark ? "Switch to light theme" : "Switch to dark theme"; clicked => { root.theme-index = root.dark ? 1 : 2; root.settings-changed(); } }
+                    }
+                }
+                Rectangle { width: 36px; } // Native caption drag region.
+                CaptionButton { glyph: 0; label: "Minimize"; clicked => { root.minimize-window(); } }
+                CaptionButton { glyph: root.native-maximized ? 2 : 1; label: root.native-maximized ? "Restore" : "Maximize"; native-hover: root.maximize-hover; native-pressed: root.maximize-pressed; clicked => { root.maximize-window(); } }
+                CaptionButton { glyph: 3; label: "Close"; clicked => { root.close(); } }
+            }
+        }
+        Rectangle { height: 1px; background: Colors.border; }
+        HorizontalLayout { vertical-stretch: 1; spacing: 0px;
+        Rectangle { width: root.sidebar-width; background: Colors.panel;
+            VerticalLayout { padding: 12px; spacing: 5px;
+                home-nav := NavButton { label: "Home"; glyph: @image-url("../assets/home.svg"); active: root.page == 0; clicked => { root.navigate(0); } }
+                discover-nav := NavButton { label: "Discover"; glyph: @image-url("../assets/discover.svg"); active: root.page == 1; clicked => { root.navigate(1); } }
+                categories-nav := NavButton { label: "Categories"; glyph: @image-url("../assets/categories.svg"); active: root.page == 2; clicked => { root.navigate(2); } }
+                Rectangle { height: 10px; }
+                Text { text: "YOUR LIBRARY"; color: Colors.muted; font-size: 9px; letter-spacing: 1px; height: 23px; }
+                installed-nav := NavButton { label: "Installed Apps"; glyph: @image-url("../assets/installed.svg"); active: root.page == 3; clicked => { root.navigate(3); } }
+                updates-nav := NavButton { label: "Updates"; glyph: @image-url("../assets/updates.svg"); active: root.page == 4; clicked => { root.navigate(4); } }
+                downloads-nav := NavButton { label: "Downloads"; glyph: @image-url("../assets/downloads.svg"); active: root.page == 5; clicked => { root.navigate(5); } }
+                queue-nav := NavButton {
+                    label: root.install-count > 0 ? "Install Queue (" + root.install-count + ")" : "Install Queue";
+                    glyph: @image-url("../assets/install-queue.svg"); active: root.reviewing-install;
+                    clicked => { root.navigate(9); }
+                }
+                Rectangle { vertical-stretch: 1; }
+                settings-nav := NavButton { label: "Settings"; glyph: @image-url("../assets/settings.svg"); active: root.page == 6; clicked => { root.navigate(6); } }
+            }
+        }
+        Rectangle { width: 1px; background: Colors.border; }
+        VerticalLayout { width: root.width - root.sidebar-width - 1px; vertical-stretch: 1; spacing: 0px;
+            if root.page <= 4 || root.page == 8 || root.reviewing-install: VerticalLayout { vertical-stretch: 1; padding: Colors.page-padding; spacing: 14px;
+                if root.page == 0: Rectangle { height: root.height < 650px ? 112px : 148px; border-radius: 16px; background: @linear-gradient(115deg, #293a76 0%, #6052ba 65%, #8a62cc 100%);
+                    HorizontalLayout { padding: root.height < 650px ? 12px : 18px; spacing: 18px;
+                        VerticalLayout { spacing: 5px;
+                            Text { text: "Explore the WinGet catalog"; color: white; font-size: 23px; font-weight: 700; }
+                            Text { text: "Browse editorial picks or search by name or package ID."; color: #e0def5; font-size: 12px; }
+                            HorizontalLayout { Button { text: "Explore apps  →"; height: 32px; clicked => { root.navigate(1); } } Rectangle { } }
+                        }
+                        Rectangle { width: 70px; height: 70px; cross-axis-self-alignment: center; border-radius: 16px; background: #ffffff18;
+                            Image { source: @image-url("../assets/discover.svg"); width: 38px; height: 38px; colorize: #f1edff; image-fit: contain; }
+                        }
+                    }
+                }
+                HorizontalLayout { spacing: 12px;
+                    VerticalLayout { spacing: 5px; min-width: 0px; horizontal-stretch: 1;
+                        Text { text: root.heading; color: Colors.text; font-size: 23px; font-weight: 700; wrap: word-wrap; overflow: elide; max-height: 58px; }
+                        Text { text: root.subtitle; color: Colors.muted; font-size: 11px; wrap: word-wrap; }
+                    }
+                    if root.install-page || root.page == 3 || root.reviewing-install: Button {
+                        property <string> action-label: root.page == 3 ? "Uninstall selected" : root.reviewing-install ? "Install selected" : "Review selection";
+                        text: root.change-count > 0 ? self.action-label + " (" + root.change-count + ")" : self.action-label;
+                        width: 152px; height: 34px; enabled: root.change-count > 0 && !root.busy;
+                        primary: root.reviewing-install;
+                        clicked => {
+                            if root.install-page { root.navigate(9); }
+                            else { root.action(root.page == 3 ? "uninstall-selected" : "install-selected"); }
+                        }
+                    }
+                    if !root.reviewing-install: Button { text: "Refresh"; width: 82px; height: 34px; clicked => { root.refresh(); } }
+                }
+                if !root.reviewing-install: HorizontalLayout { spacing: 10px;
+                    AppCombo { window-height: root.height; model: root.categories; current-index <=> root.category-index; selected(value) => { root.filter(root.category-index, root.sort-index); } horizontal-stretch: 1; }
+                    if root.page == 1: AppCombo { window-height: root.height; model: root.collections; current-index <=> root.collection-index; selected(value) => { root.filter(root.category-index, root.sort-index); } width: root.width < 960px ? 145px : 176px; }
+                    if root.page != 0 && (root.page != 4 || root.width >= 960px): AppCombo { window-height: root.height; model: [root.page == 1 ? "Catalog order" : "Default order", "Name A–Z", "Name Z–A"]; current-index <=> root.sort-index; selected(value) => { root.filter(root.category-index, root.sort-index); } width: 128px; }
+                    LayoutToggle { list-mode <=> root.list-mode; }
+                    if root.page == 4: Button { text: "Update selected"; enabled: root.update-count > 0; clicked => { root.action("selected"); } }
+                    if root.page == 4: Button { text: "Update all…"; enabled: root.result-count > 0; clicked => { root.action("all"); } }
+                }
+                if root.page == 2 && root.category-index > 0 && root.category-index < 15: Button { text: "Find more in this category through WinGet"; enabled: root.category-index > 0 && root.category-index < 15; clicked => { root.search-category(); } }
+                if root.page == 8 && root.scoop-search-available: HorizontalLayout {
+                    Button { text: "Also search Scoop"; width: 150px; height: 34px; enabled: !root.busy; clicked => { root.action("search-scoop"); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if root.busy: ProgressIndicator { indeterminate: true; height: 4px; }
+                if root.result-count == 0 && root.reviewing-install: VerticalLayout { spacing: 12px; alignment: center; vertical-stretch: 1;
+                    Text { text: "No apps selected"; color: Colors.text; font-size: 22px; horizontal-alignment: center; }
+                    Text { text: "Select apps while browsing to add them here."; color: Colors.muted; horizontal-alignment: center; }
+                    Button { text: "Browse apps"; width: 112px; height: 36px; cross-axis-self-alignment: center; clicked => { root.navigate(1); } }
+                }
+                if root.result-count == 0 && !root.reviewing-install: VerticalLayout { spacing: 12px;
+                    Rectangle { vertical-stretch: 1; }
+                    Text { text: root.busy ? "Finding your apps…" : "Nothing to show here yet"; color: Colors.text; font-size: 22px; horizontal-alignment: center; }
+                    Text { text: root.busy ? "You can keep browsing while SlimStore works." : "Try a different search or category, or refresh your library."; color: Colors.muted; horizontal-alignment: center; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                if root.result-count > 0 && (root.list-mode || root.reviewing-install): browse-pane := Rectangle { vertical-stretch: 1;
+                    property <bool> overflow: root.rows.length * 86px > self.height;
+                    browse-list := ListView { x: 0px; y: 0px; width: parent.width - (parent.overflow ? 28px : 0px); height: parent.height; content-y <=> root.results-y; horizontal-stretch: 1; vertical-stretch: 1; vertical-scrollbar-policy: ScrollBarPolicy.always-off; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        for row in root.rows: Rectangle { height: 86px;
+                        AppListRow { width: parent.width; y: 0px;
+                            item: row.first;
+                            selection-mode: root.can-select; review-mode: root.reviewing-install; selection-enabled: !root.busy;
+                            open(id) => { root.open-app(id); }
+                            select(id, checked) => { root.select-app(id, checked); }
+                        }
+                        }
+                    }
+                    AppScrollRail { x: parent.width - 14px; y: 0px; width: 14px; height: parent.height; page-size: browse-list.height; content-height: browse-list.content-height; content-y <=> browse-list.content-y; }
+                }
+                if root.result-count > 0 && !root.list-mode && !root.reviewing-install: grid-pane := Rectangle { vertical-stretch: 1;
+                    property <bool> overflow: root.rows.length * 200px > self.height;
+                    grid-list := ListView { x: 0px; y: 0px; width: parent.width - (parent.overflow ? 28px : 0px); height: parent.height; content-y <=> root.results-y; horizontal-stretch: 1; vertical-stretch: 1; vertical-scrollbar-policy: ScrollBarPolicy.always-off; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        for row in root.rows: AppGridRow {
+                            app-row: row;
+                            selection-mode: root.can-select; selection-enabled: !root.busy;
+                            columns: root.columns;
+                            open(id) => { root.open-app(id); }
+                            select(id, checked) => { root.select-app(id, checked); }
+                        }
+                    }
+                    AppScrollRail { x: parent.width - 14px; y: 0px; width: 14px; height: parent.height; page-size: grid-list.height; content-height: grid-list.content-height; content-y <=> grid-list.content-y; }
+                }
+            }
+            if root.page == 7: details-area := AppScrollArea { vertical-stretch: 1;
+                VerticalLayout {
+                    width: min(1000px, details-area.visible-width);
+                    x: (details-area.visible-width - self.width) / 2;
+                    padding: Colors.page-padding; spacing: 18px;
+                    HorizontalLayout { height: 68px; spacing: 14px;
+                        AppIcon { width: 64px; height: 64px; cross-axis-self-alignment: center; item: root.detail; }
+                        VerticalLayout { horizontal-stretch: 1; cross-axis-self-alignment: center; vertical-stretch: 0; spacing: 3px;
+                            Text { text: root.detail.name; color: Colors.text; font-size: 22px; font-weight: 700; overflow: elide; }
+                            if root.detail.publisher != "": Text { text: root.detail.publisher; color: Colors.muted; font-size: 12px; overflow: elide; }
+                            Text { text: root.detail.id; color: Colors.accent-ink; font-size: 11px; overflow: elide; }
+                        }
+                        HorizontalLayout { cross-axis-self-alignment: center; spacing: 7px;
+                            if root.detail-action != "Installed" && !root.detail-scoop-result: Button { text: root.detail-action; primary: true; width: 82px; height: 36px; enabled: root.detail-ready && root.detail-actionable; clicked => { root.action("primary"); } }
+                            if root.detail-installed && root.detail.source != "scoop": Button { text: "Uninstall"; width: 77px; height: 36px; enabled: root.detail-ready && root.detail-actionable; clicked => { root.action("uninstall"); } }
+                            Button { text: "Refresh"; width: 70px; height: 36px; clicked => { root.refresh(); } }
+                        }
+                    }
+                    if root.busy: ProgressIndicator { indeterminate: true; height: 4px; }
+                    if root.detail-scoop-result: HorizontalLayout { spacing: 8px;
+                        if root.detail-ready && root.detail-actionable: Button { text: "Review install"; primary: true; height: 36px; enabled: !root.busy; clicked => { root.action("primary"); } }
+                        if !root.scoop-detected: Button { text: "Install Scoop"; primary: true; height: 36px; clicked => { root.link("scoop-setup"); } }
+                        if !root.scoop-detected: Button { text: "Check for Scoop"; height: 36px; enabled: !root.busy; clicked => { root.action("detect-scoop"); } }
+                        if root.scoop-detected && !root.detail-installed: Button { text: "Scoop instructions"; height: 36px; clicked => { root.action("scoop-instructions"); } }
+                        if root.detail-scoop-manifest: Button { text: "View manifest"; height: 36px; clicked => { root.action("scoop-manifest"); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if root.detail-scoop-result && root.detail-scoop-note != "": Text { text: root.detail-scoop-note; color: Colors.muted; wrap: word-wrap; font-size: 12px; }
+                    if root.detail.summary != "" || root.detail.publisher-description != "": Rectangle {
+                        background: Colors.panel; border-radius: Colors.card-radius; border-width: 1px; border-color: Colors.border;
+                        VerticalLayout { padding: 16px; spacing: 8px;
+                            if root.detail.summary != "": Text { text: "Overview"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                            if root.detail.summary != "": Text { text: root.detail.summary; color: Colors.text; wrap: word-wrap; }
+                            if root.detail.publisher-description != "": Text { text: root.detail-scoop-result ? "Description from Scoop" : "Description from the WinGet catalog"; color: Colors.muted; font-size: 12px; font-weight: 600; }
+                            if root.detail.publisher-description != "": Text { text: root.detail.publisher-description; color: Colors.text; wrap: word-wrap; }
+                        }
+                    }
+                    Rectangle { background: Colors.panel; border-radius: Colors.card-radius; border-width: 1px; border-color: Colors.border;
+                        VerticalLayout { padding: 16px; spacing: 9px;
+                            Text { text: "Package information"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                            HorizontalLayout { spacing: 12px;
+                                VerticalLayout { horizontal-stretch: 1; spacing: 3px; Text { text: "Installed version"; color: Colors.muted; font-size: 11px; } Text { text: root.detail.installed-version != "" ? root.detail.installed-version : root.detail-ready ? "Not installed" : "Unverified"; color: Colors.text; overflow: elide; } }
+                                VerticalLayout { horizontal-stretch: 1; spacing: 3px; Text { text: "Catalog version"; color: Colors.muted; font-size: 11px; } Text { text: root.detail.available-version != "" ? root.detail.available-version : "Not reported"; color: Colors.text; overflow: elide; } }
+                                VerticalLayout { horizontal-stretch: 1; spacing: 3px; Text { text: "Source"; color: Colors.muted; font-size: 11px; } Text { text: root.detail.source; color: Colors.text; overflow: elide; } }
+                            }
+                            if root.detail.license != "": Text { text: "License  ·  " + root.detail.license; color: Colors.muted; wrap: word-wrap; }
+                            if root.detail.website != "" || root.detail.notes != "": HorizontalLayout { spacing: 8px;
+                                if root.detail.website != "": Button { text: "Website"; width: 90px; height: 36px; clicked => { root.package-link("website"); } }
+                                if root.detail.notes != "": Button { text: "Release notes (catalog)"; width: 164px; height: 36px; clicked => { root.package-link("notes"); } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                        }
+                    }
+                    VerticalLayout { spacing: 8px;
+                        Text { text: "Screenshots"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                        if root.gallery.length > 0: HorizontalLayout { alignment: start; spacing: 12px;
+                            for shot[i] in root.gallery: GalleryTile {
+                                source: shot.thumbnail; label: shot.label;
+                                clicked => { root.preview-index = i + 1; }
+                            }
+                        }
+                        Text { text: root.gallery.length > 0 ? root.gallery[0].credit : "No verified screenshots available."; color: Colors.muted; font-size: 12px; }
+                    }
+                    HorizontalLayout {
+                        Button { text: root.detail-scoop-result ? (root.details-expanded ? "Hide Scoop details" : "Show Scoop details") : (root.details-expanded ? "Hide WinGet output" : "Show full WinGet output"); height: 36px; clicked => { root.details-expanded = !root.details-expanded; } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if root.details-expanded: Rectangle {
+                        background: Colors.panel; border-radius: Colors.card-radius; border-width: 1px; border-color: Colors.border;
+                        VerticalLayout { padding: 16px;
+                            Text { text: root.detail-text; color: Colors.text; wrap: word-wrap; font-size: 12px; }
+                        }
+                    }
+                }
+            }
+            if root.page == 5: VerticalLayout { vertical-stretch: 1; padding: 22px; spacing: 12px;
+                Text { text: "Downloads & activity"; color: Colors.text; font-size: 25px; font-weight: 700; }
+                Text { text: "Operations run one at a time. Session history stays in memory."; color: Colors.muted; font-size: 12px; }
+                if root.operation-count > 0 && root.queue-block == "": ProgressIndicator { indeterminate: true; height: 4px; }
+                if root.queue-block != "": HorizontalLayout { spacing: 12px;
+                    Text { text: root.queue-block; color: Colors.accent-ink; wrap: word-wrap; vertical-alignment: center; horizontal-stretch: 1; }
+                    if root.queue-resumable: Button { text: "Resume queue"; height: 36px; clicked => { root.resume-queue(); } }
+                }
+                if root.activity.length == 0: Text { text: "No operations this session."; color: Colors.muted; wrap: word-wrap; vertical-stretch: 1; vertical-alignment: center; horizontal-alignment: center; }
+                if root.activity.length > 0: activity-pane := Rectangle { vertical-stretch: 1;
+                    property <length> card-height: 92px;
+                    property <length> card-gap: 10px;
+                    property <length> row-height: self.card-height + self.card-gap;
+                    property <bool> overflow: root.activity.length * self.row-height > self.height;
+                    activity-list := ListView { x: 0px; y: 0px; width: parent.width - (parent.overflow ? 28px : 0px); height: parent.height; horizontal-stretch: 1; vertical-stretch: 1; vertical-scrollbar-policy: ScrollBarPolicy.always-off; horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                        for job in root.activity: Rectangle { height: activity-pane.row-height;
+                            Rectangle { width: parent.width; height: activity-pane.card-height; clip: true; background: Colors.panel; border-radius: 12px; border-width: 1px; border-color: Colors.border;
+                                VerticalLayout { padding-top: 10px; padding-bottom: 10px; padding-left: 15px; padding-right: 15px; spacing: 5px;
+                                    HorizontalLayout { height: 34px; spacing: 10px;
+                                        Text { text: job.title; color: Colors.text; font-weight: 600; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                                        Text { text: job.status; color: Colors.accent-ink; vertical-alignment: center; }
+                                        if job.cancellable: Button { text: "Cancel queued"; width: 112px; clicked => { root.cancel(job.key); } }
+                                        if job.reviewable: Button { text: "Review again"; width: 112px; enabled: !root.busy; clicked => { root.review-operation(job.key); } }
+                                        if job.detail != "": Button { text: "View log"; width: 90px; clicked => { root.activity-log = job.detail; } }
+                                    }
+                                    Text { text: job.summary; color: Colors.muted; font-size: 12px; wrap: word-wrap; overflow: elide; max-lines: 2; }
+                                }
+                            }
+                        }
+                    }
+                    AppScrollRail { x: parent.width - 14px; y: 0px; width: 14px; height: parent.height; page-size: activity-list.height; content-height: activity-list.content-height; content-y <=> activity-list.content-y; }
+                }
+            }
+            if root.page == 6: settings-area := AppScrollArea { vertical-stretch: 1;
+                VerticalLayout { width: min(760px, settings-area.visible-width - 32px); x: (settings-area.visible-width - self.width) / 2; padding-top: 20px; padding-bottom: 24px; spacing: 14px;
+                    Text { text: "Settings"; color: Colors.text; font-size: 22px; font-weight: 700; height: 30px; }
+                    Rectangle { background: Colors.panel; border-radius: 12px; border-width: 1px; border-color: Colors.border;
+                        VerticalLayout { padding: 14px; spacing: 9px;
+                            Text { text: "Appearance"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                            HorizontalLayout { height: 40px; Text { text: "Theme"; color: Colors.muted; vertical-alignment: center; horizontal-stretch: 1; } AppCombo { window-height: root.height; model: ["System", "Light", "Dark"]; current-index <=> root.theme-index; selected(value) => { root.settings-changed(); } width: 180px; height: 36px; } }
+                            CheckBox { text: "Use the Windows accent color for SlimStore highlights"; checked <=> root.accent-enabled; height: 40px; toggled => { root.settings-changed(); } }
+                        }
+                    }
+                    Rectangle { background: Colors.panel; border-radius: 12px; border-width: 1px; border-color: Colors.border;
+                        VerticalLayout { padding: 14px; spacing: 8px;
+                            Text { text: "Portability & privacy"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                            CheckBox { text: "Save settings beside SlimStore.exe"; checked <=> root.persistent; height: 40px; toggled => { root.settings-changed(); } }
+                            CheckBox { text: "Load verified app icons online"; checked <=> root.online-icons; height: 40px; toggled => { root.settings-changed(); } }
+                            Text { text: root.storage-status; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
+                            Button { text: "Clear session metadata cache"; width: 200px; height: 36px; clicked => { root.clear-cache(); } }
+                        }
+                    }
+                    Rectangle { background: Colors.panel; border-radius: 12px; border-width: 1px; border-color: Colors.border;
+                        VerticalLayout { padding: 14px; spacing: 8px;
+                            Text { text: "Package managers & sources"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                            Text { text: root.backend-status; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
+                            Text { text: root.scoop-status; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
+                            HorizontalLayout { spacing: 8px;
+                                if !root.scoop-detected: Button { text: "Install Scoop"; width: 118px; height: 36px; clicked => { root.link("scoop-setup"); } }
+                                Button { text: "Check for Scoop"; width: 132px; height: 36px; enabled: !root.busy; clicked => { root.action("detect-scoop"); } }
+                                Rectangle { horizontal-stretch: 1; }
+                            }
+                            CheckBox { text: "Cache the Scoop catalog beside SlimStore.exe"; checked <=> root.scoop-catalog-cache; height: 40px; toggled => { root.settings-changed(); } }
+                            CheckBox { text: "Search additional buckets already configured in Scoop"; checked <=> root.scoop-additional-buckets; height: 40px; toggled => { root.settings-changed(); } }
+                            CheckBox { text: "Accept configured WinGet source agreements"; checked <=> root.source-consent; height: 40px; toggled => { root.settings-changed(); } }
+                            Text { text: "Source requests may disclose your region or other required data. Package agreements are confirmed separately for each operation."; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
+                            HorizontalLayout { spacing: 6px;
+                                Button { text: "Agreement info"; width: 130px; height: 36px; clicked => { root.link("sources"); } }
+                                Button { text: "WinGet help"; width: 112px; height: 36px; clicked => { root.link("help"); } }
+                                Button { text: "Refresh sources"; width: 124px; height: 36px; clicked => { root.refresh(); } }
+                            }
+                            Button { text: root.sources-expanded ? "Hide configured sources" : "Show configured sources"; height: 34px; clicked => { root.sources-expanded = !root.sources-expanded; } }
+                            if root.sources-expanded: Text { text: root.sources; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
+                        }
+                    }
+                    Rectangle { background: Colors.panel; border-radius: 12px; border-width: 1px; border-color: Colors.border;
+                        VerticalLayout { padding: 14px; spacing: 8px;
+                            Text { text: "About SlimStore"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                            Text { text: "made by NaeTech"; color: Colors.muted; font-size: 12px; }
+                            Text { text: "Version " + root.app-version + " · Portable WinGet and Scoop frontend"; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
+                            Text { text: "SlimStore writes no settings unless storage is enabled. WinGet and publisher installers manage their own data and can change your PC. SlimStore and Slint use GPL-3.0-only; dependency notices are in the source distribution."; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
+                            HorizontalLayout { spacing: 6px;
+                                Button { text: "Source availability"; width: 148px; height: 36px; clicked => { root.link("source"); } }
+                                Button { text: "Slint licensing"; width: 115px; height: 36px; clicked => { root.link("license"); } }
+                                Button { text: "Artwork credits"; width: 128px; height: 36px; clicked => { root.link("artwork"); } }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle { height: 36px; background: Colors.panel;
+                HorizontalLayout { padding-left: 24px; padding-right: 20px; spacing: 10px;
+                    Text { text: root.busy ? "◌" : "●"; color: Colors.accent-ink; width: 15px; vertical-alignment: center; }
+                    Text { text: root.status; color: Colors.muted; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                    if (root.install-page || root.reviewing-install || root.page == 3) && root.change-count > 0: Button {
+                        text: "Clear selection"; height: 28px; cross-axis-self-alignment: center; enabled: !root.busy;
+                        clicked => { root.action("clear-selection"); }
+                    }
+                }
+            }
+        }
+    }
+    }
+    }
+    if root.client-border && !root.native-maximized: Rectangle {
+        x: 0px; y: 0px; width: root.width; height: root.height;
+        border-width: 1px; border-color: Colors.dark ? #3b4558 : #cbd3df;
+    }
+    if root.preview-index > 0 && root.preview-index <= root.gallery.length: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height; background: #000000ae;
+        TouchArea { clicked => { root.preview-index = 0; } }
+        preview-focus := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.preview-index = 0; return accept; }
+                return reject;
+            }
+        }
+        Rectangle {
+            x: 24px; y: 24px; width: parent.width - 48px; height: parent.height - 48px;
+            border-radius: Colors.card-radius; background: Colors.panel;
+            TouchArea { }
+            VerticalLayout { padding: 14px; spacing: 10px;
+                HorizontalLayout { spacing: 10px;
+                    Text { text: root.gallery[root.preview-index - 1].label; color: Colors.text; font-size: 17px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                    Button { text: "Close preview"; height: 36px; clicked => { root.preview-index = 0; } }
+                }
+                Image { vertical-stretch: 1; source: root.gallery[root.preview-index - 1].preview; image-fit: contain; }
+                Text { text: root.gallery[root.preview-index - 1].credit; color: Colors.muted; font-size: 12px; }
+            }
+        }
+    }
+    if root.activity-log != "": Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height; background: #00000088;
+        TouchArea { clicked => { root.activity-log = ""; } }
+        Rectangle {
+            width: min(780px, root.width - 56px); height: min(540px, root.height - 56px);
+            x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+            border-radius: Colors.card-radius; background: Colors.panel;
+            TouchArea { }
+            VerticalLayout { padding: 16px; spacing: 12px;
+                HorizontalLayout {
+                    Text { text: "Operation log"; color: Colors.text; font-size: 18px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                    Button { text: "Close"; height: 36px; clicked => { root.activity-log = ""; } }
+                }
+                log-area := AppScrollArea {
+                    VerticalLayout { width: log-area.visible-width; padding-right: 8px;
+                        Text { text: root.activity-log; color: Colors.text; wrap: word-wrap; }
+                    }
+                }
+            }
+        }
+    }
+    if root.confirm-visible: FocusScope {
+        x: 0; y: 0; width: root.width; height: root.height;
+        init => { dismiss.focus(); }
+        capture-key-pressed(event) => {
+            if event.text == Key.Escape { root.confirmed(false); return accept; }
+            return reject;
+        }
+        Rectangle { width: min(570px, root.width - 70px); height: 380px; x: (root.width - self.width) / 2; y: (root.height - self.height) / 2; border-radius: 17px; background: Colors.panel; border-width: 1px; border-color: Colors.border;
+            accessible-role: groupbox;
+            accessible-label: root.confirm-title;
+            VerticalLayout { padding: 26px; spacing: 16px;
+                Text { text: root.confirm-title; color: Colors.text; font-size: 22px; font-weight: 600; wrap: word-wrap; }
+                review := AppScrollArea {
+                    VerticalLayout {
+                        width: review.visible-width;
+                        Text { text: root.confirm-text; color: Colors.muted; wrap: word-wrap; }
+                    }
+                }
+                if root.confirm-agreement-required: CheckBox { text: "I accept the publisher's package and installer agreements"; checked <=> root.package-consent; }
+                HorizontalLayout {
+                    dismiss := Button { text: root.confirm-information ? "Close" : "Cancel"; primary: root.confirm-information; clicked => { root.confirmed(false); } }
+                    if !root.confirm-information: Button { text: "Confirm"; primary: true; enabled: !root.confirm-agreement-required || root.package-consent; clicked => { root.confirmed(true); } }
+                }
+            }
+        }
+    }
+}
