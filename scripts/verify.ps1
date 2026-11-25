@@ -11,11 +11,16 @@ $first = Join-Path $runRoot 'First folder'
 $moved = Join-Path $runRoot 'Moved folder'
 New-Item -ItemType Directory -Path $first,$moved | Out-Null
 $copy = Join-Path $first 'SlimStore.exe'
-$destination = Join-Path $moved 'SlimStore.exe'
+$destination = Join-Path $moved 'SlimStore Portable Test.exe'
+$renamed = Join-Path $moved ('SlimStore Test ' + [char]0x0218 + '.exe')
 Copy-Item -LiteralPath $exe -Destination $copy
 $checks = [System.Collections.Generic.List[string]]::new()
 function Check([bool]$ok,[string]$message) { if (-not $ok) { throw $message }; $checks.Add("PASS $message"); Write-Output "PASS $message" }
-function SingleFile([string]$dir) { $files = @(Get-ChildItem -LiteralPath $dir -Force); Check ($files.Count -eq 1 -and $files[0].Name -eq 'SlimStore.exe') "Single executable and no generated SlimStore files in $dir" }
+function SingleFile([string]$path) {
+    $dir = Split-Path -Parent $path
+    $files = @(Get-ChildItem -LiteralPath $dir -Force)
+    Check ($files.Count -eq 1 -and $files[0].Name -eq (Split-Path -Leaf $path)) "Single executable and no generated SlimStore files in $dir"
+}
 function EarlyClose([string]$path) {
     Remove-Item Env:\SLIMSTORE_GUI_SMOKE,Env:\SLIMSTORE_SMOKE_REPORT,Env:\SLINT_SCALE_FACTOR -ErrorAction SilentlyContinue
     $clock = [Diagnostics.Stopwatch]::StartNew()
@@ -81,10 +86,10 @@ public class SlimStoreResourceCheck {
     $dlls = @([regex]::Matches($imports,'(?im)^\s+([a-z0-9._-]+\.dll)\s*$') | ForEach-Object {$_.Groups[1].Value})
     Check ($dlls.Count -gt 0) 'Runtime imports were inspected'
     foreach ($dll in $dlls) { Check ((Test-Path -LiteralPath (Join-Path $env:SystemRoot "System32\$dll")) -or $dll.StartsWith('api-ms-')) "Normal Windows system import: $dll" }
-    SingleFile $first
+    SingleFile $copy
     Smoke $copy 'basic' 'clean-folder'
     EarlyClose $copy
-    SingleFile $first
+    SingleFile $copy
     $originalAcl = Get-Acl -LiteralPath $first
     $readOnlyAcl = Get-Acl -LiteralPath $first
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -96,17 +101,17 @@ public class SlimStoreResourceCheck {
         try { [IO.File]::WriteAllText((Join-Path $first 'write-probe.txt'),'probe') } catch [System.UnauthorizedAccessException] { $blocked = $true }
         Check $blocked 'Test folder actually denies file writes'
         Smoke $copy 'basic' 'read-only-folder'
-        SingleFile $first
+        SingleFile $copy
     } finally { Set-Acl -LiteralPath $first -AclObject $originalAcl }
     # Both resolved paths are inside this explicitly created verification run; move only this file.
     Move-Item -LiteralPath $copy -Destination $destination
-    SingleFile $moved
-    Smoke $destination 'basic' 'moved-high-dpi' '1.5'
-    SingleFile $moved
+    SingleFile $destination
+    Smoke $destination 'basic' 'moved-renamed-high-dpi' '1.5'
+    SingleFile $destination
     $env:SLIMSTORE_TEST_MISSING_WINGET = '1'
     Smoke $destination 'missing' 'missing-winget'
     Remove-Item Env:\SLIMSTORE_TEST_MISSING_WINGET
-    SingleFile $moved
+    SingleFile $destination
     Smoke $destination 'geometry' 'responsive-sizes'
     Smoke $destination 'dpi' 'dpi-100' '1'
     Smoke $destination 'dpi' 'dpi-125' '1.25'
@@ -114,11 +119,36 @@ public class SlimStoreResourceCheck {
     Smoke $destination 'dpi' 'dpi-200' '2'
     if ($Live) {
         Smoke $destination 'live' 'live-winget'
+        Smoke $destination 'search-icons' 'live-search-icons'
+        Smoke $destination 'game-artwork' 'live-game-artwork'
+        Smoke $destination 'search-overview' 'live-search-overview'
+        Smoke $destination 'search-screenshots' 'live-search-screenshots'
         Smoke $destination 'scoop-search' 'scoop-fallback'
         $env:SLIMSTORE_TEST_MISSING_WINGET = '1'
         Smoke $destination 'scoop-no-winget' 'scoop-without-winget'
         Remove-Item Env:\SLIMSTORE_TEST_MISSING_WINGET
-        SingleFile $moved
+        SingleFile $destination
+        $sidecar = Join-Path $moved 'SlimStore-data'
+        $cache = Join-Path $sidecar 'icons-v1.bin'
+        $appData = Join-Path $sidecar 'app-data-v1.bin'
+        $settings = Join-Path $sidecar 'settings.json'
+        try {
+            Smoke $destination 'icon-cache-save' 'icon-cache-save'
+            Check ((Test-Path -LiteralPath $cache -PathType Leaf) -and (Get-Item -LiteralPath $cache).Length -lt 4MB) 'Opt-in icon cache persisted beside the test executable'
+            Check ((Test-Path -LiteralPath $appData -PathType Leaf) -and (Get-Item -LiteralPath $appData).Length -lt 2MB) 'Opt-in package metadata persisted beside the test executable'
+            Move-Item -LiteralPath $destination -Destination $renamed
+            Check ((Get-FileHash -LiteralPath $renamed).Hash -eq (Get-FileHash -LiteralPath $exe).Hash) 'Renaming the executable preserves its SHA-256 hash'
+            Smoke $renamed 'icon-cache-reuse' 'icon-cache-reuse-after-rename'
+            Check ((-not (Test-Path -LiteralPath $cache)) -and (-not (Test-Path -LiteralPath $appData))) 'Disabling the cache removed both files'
+        } finally {
+            foreach ($file in @($cache,$appData,$settings)) {
+                if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file }
+            }
+            if ((Test-Path -LiteralPath $sidecar -PathType Container) -and -not (Get-ChildItem -LiteralPath $sidecar -Force | Select-Object -First 1)) {
+                Remove-Item -LiteralPath $sidecar
+            }
+        }
+        SingleFile $renamed
     }
     $report = (@("SlimStore independent release verification", "Executable: $exe", "SHA256: $((Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash)", "Authenticode: $((Get-AuthenticodeSignature -LiteralPath $exe).Status)", "Bytes: $($bytes.Length)", "") + $checks.ToArray()) -join [Environment]::NewLine
     [IO.File]::WriteAllText((Join-Path $verification 'release-report.txt'),$report)
@@ -126,7 +156,7 @@ public class SlimStoreResourceCheck {
 } finally {
     Remove-Item Env:\SLIMSTORE_GUI_SMOKE,Env:\SLIMSTORE_SMOKE_REPORT,Env:\SLIMSTORE_TEST_MISSING_WINGET,Env:\SLINT_SCALE_FACTOR -ErrorAction SilentlyContinue
     # Remove only the exact copied executable and empty folders created for this run.
-    foreach ($file in @($copy,$destination)) {
+    foreach ($file in @($copy,$destination,$renamed)) {
         if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file }
     }
     foreach ($dir in @($first,$moved,$runRoot)) {

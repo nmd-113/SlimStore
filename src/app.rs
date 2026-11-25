@@ -1,5 +1,5 @@
 use crate::{
-    ActivityItem, AppItem, AppRow, Artwork, MainWindow,
+    ActivityItem, AppItem, AppRow, Artwork, MainWindow, PackageScreenshot,
     errors::AppError,
     icons,
     metadata::{self, CATEGORIES},
@@ -7,11 +7,13 @@ use crate::{
     packages::Package,
     platform,
     scoop::{self, Scoop},
-    scoop_catalog,
+    scoop_catalog, screenshots,
     storage::{Settings, Storage},
     winget::{self, Request, Winget},
 };
-use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
+use slint::{
+    ComponentHandle, Image, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
+};
 use std::{
     cell::RefCell,
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
@@ -61,6 +63,7 @@ enum ReadKind {
     Category(String),
     Inventory(bool),
     Details(Package),
+    Screenshots(Package),
     Batch(BatchAction, Vec<Package>),
     Sources,
 }
@@ -84,7 +87,9 @@ enum Response {
     ScoopSearch(scoop_catalog::Search),
     ScoopDetection(bool),
     Inventory(Vec<Package>, usize, bool, Option<String>),
+    DetailMetadata(Package, String),
     Details(Package, String, bool),
+    Screenshots(Vec<screenshots::Screenshot>),
     Batch(BatchAction, Vec<Package>, Vec<String>),
     Sources(String),
     Operations(bool),
@@ -248,6 +253,14 @@ fn read_worker(
                             )?
                             .checked()?
                             .text;
+                        if let Some(version) = winget::show_version(&details, &package.id) {
+                            package.version = version.into();
+                        }
+                        post(
+                            &ui,
+                            Some(job.generation),
+                            Response::DetailMetadata(package.clone(), details.clone()),
+                        );
                         let installed = winget::parse_table(
                             &winget.read(
                                 &Request::InstalledExact(package.id.clone(), None),
@@ -266,17 +279,24 @@ fn read_worker(
                             package.installed = None;
                             package.available = None;
                         }
-                        if let Ok(output) = winget.read(
-                            &Request::CatalogExact(package.id.clone()),
-                            job.source_consent,
-                            obsolete,
-                        ) && let Ok(table) = winget::parse_table(&output, false)
+                        if package.version.is_empty()
+                            && let Ok(output) = winget.read(
+                                &Request::CatalogExact(package.id.clone()),
+                                job.source_consent,
+                                obsolete,
+                            )
+                            && let Ok(table) = winget::parse_table(&output, false)
                             && let Some(entry) =
                                 table.packages.iter().find(|p| p.key() == package.key())
                         {
                             package.version.clone_from(&entry.version);
                         }
                         Ok(Response::Details(package, details, verified_inventory))
+                    }
+                    ReadKind::Screenshots(package) => {
+                        Ok(Response::Screenshots(screenshots::load(&package, || {
+                            !obsolete()
+                        })))
                     }
                     ReadKind::Batch(action, selection) => {
                         let mut eligible = Vec::new();
@@ -427,7 +447,7 @@ struct State {
     install_selection: BTreeMap<String, Package>,
     uninstall_selection: BTreeMap<String, Package>,
     detail_ready: bool,
-    cache: VecDeque<(String, (Package, String, bool))>,
+    cache: VecDeque<(String, (Package, String))>,
     pending: Option<Pending>,
     storage: Storage,
     settings: Settings,
@@ -444,6 +464,7 @@ impl State {
         ui.set_busy(true);
         let message = match &kind {
             ReadKind::Details(p) if p.source == scoop::SOURCE => "Loading Scoop package details…",
+            ReadKind::Screenshots(_) => "Loading screenshots…",
             ReadKind::Batch(BatchAction::InstallScoop, _) => "Checking the Scoop package…",
             ReadKind::DetectScoop => "Checking for Scoop…",
             _ => "Working with the system WinGet…",
@@ -553,6 +574,16 @@ fn item(package: &Package, state: &State, known: bool) -> AppItem {
     ];
     let (r, g, b) = colors[hash % colors.len()];
     let scoop_row = package.scoop_catalog.as_deref();
+    let website = curated.map_or(scoop_row.map_or("", |row| row.homepage.as_str()), |p| {
+        p.website.as_str()
+    });
+    let description = curated.map_or(scoop_row.map_or("", |row| row.description.as_str()), |p| {
+        if p.summary.is_empty() {
+            &p.description
+        } else {
+            &p.summary
+        }
+    });
     AppItem {
         id: package.id.clone().into(),
         name: package.name.clone().into(),
@@ -569,28 +600,23 @@ fn item(package: &Package, state: &State, known: bool) -> AppItem {
             )
             .into(),
         summary: curated.map_or("", |p| p.summary.as_str()).into(),
-        description: curated
-            .map_or(scoop_row.map_or("", |row| row.description.as_str()), |p| {
-                if p.summary.is_empty() {
-                    &p.description
-                } else {
-                    &p.summary
-                }
-            })
-            .into(),
+        description: description.into(),
         license: curated
             .map_or(scoop_row.map_or("", |row| row.license.as_str()), |p| {
                 p.license.as_str()
             })
             .into(),
-        website: curated
-            .map_or(scoop_row.map_or("", |row| row.homepage.as_str()), |p| {
-                p.website.as_str()
-            })
+        website: platform::browser_link(website).unwrap_or_default().into(),
+        notes: curated
+            .and_then(|p| platform::browser_link(&p.notes))
+            .unwrap_or_default()
             .into(),
-        notes: curated.map_or("", |p| p.notes.as_str()).into(),
-        art_id: curated.map_or("", |p| p.id.as_str()).into(),
-        icon_slot: state.icons.slot(package),
+        support_site: "".into(),
+        publisher_site: "".into(),
+        license_site: "".into(),
+        icon_slot: state
+            .icons
+            .slot(package, package.manageable() && description.is_empty()),
         installed_version: installed_version.into(),
         available_version: available_version.into(),
         source: package.source.clone().into(),
@@ -617,17 +643,26 @@ fn item(package: &Package, state: &State, known: bool) -> AppItem {
 }
 
 fn render(ui: &MainWindow, state: &State) {
-    state.icons.begin_view();
     let v = &state.view;
+    let page_changed = ui.get_page() != v.page;
+    state.icons.begin_view(v.page, &v.heading);
+    if v.page != 7 {
+        clear_gallery(ui);
+    }
+    ui.set_screenshots_available(
+        v.page == 7 && v.details.as_ref().is_some_and(screenshots::available),
+    );
     ui.set_page(v.page);
     ui.set_install_count(state.install_selection.len() as i32);
     ui.set_uninstall_count(state.uninstall_selection.len() as i32);
-    ui.set_update_count(
+    ui.set_update_count(if v.page == 4 {
         v.packages
             .iter()
             .filter(|p| p.update_eligible() && state.selected.contains(&p.key()))
-            .count() as i32,
-    );
+            .count() as i32
+    } else {
+        0
+    });
     ui.set_heading(v.heading.clone().into());
     ui.set_subtitle(v.subtitle.clone().into());
     ui.set_scoop_search_available(
@@ -639,6 +674,14 @@ fn render(ui: &MainWindow, state: &State) {
     ui.set_collection_index(v.collection);
     ui.set_inventory_known(state.inventory_known);
     ui.set_can_back(!state.history.is_empty());
+    render_activity(ui, state);
+    if !install_page(v.page) && !matches!(v.page, 3 | 4 | INSTALL_QUEUE_PAGE) {
+        if page_changed {
+            ui.set_rows(ModelRc::default());
+            ui.set_result_count(0);
+        }
+        return;
+    }
     let category = CATEGORIES
         .get(v.category as usize)
         .copied()
@@ -679,8 +722,13 @@ fn render(ui: &MainWindow, state: &State) {
         .collect();
     ui.set_rows(ModelRc::new(VecModel::from(rows)));
     ui.set_result_count(packages.len() as i32);
-    let operations = state.manager.snapshot();
+}
+
+fn render_activity(ui: &MainWindow, state: &State) {
     ui.set_operation_count(state.manager.pending() as i32);
+    if state.view.page != 5 {
+        return;
+    }
     let block = state.manager.block();
     ui.set_queue_block(
         match block {
@@ -697,7 +745,9 @@ fn render(ui: &MainWindow, state: &State) {
     ui.set_queue_resumable(
         block == Some(QueueBlock::InstallerBusy) && !state.manager.is_stopping(),
     );
-    let activity: Vec<ActivityItem> = operations
+    let activity: Vec<ActivityItem> = state
+        .manager
+        .snapshot()
         .into_iter()
         .rev()
         .map(|e| ActivityItem {
@@ -723,6 +773,76 @@ fn render(ui: &MainWindow, state: &State) {
     ui.set_activity(ModelRc::new(VecModel::from(activity)));
 }
 
+fn public_details(package: &Package, text: &str) -> crate::icon_cache::PublicMetadata {
+    use crate::icon_cache::PublicMetadata;
+    if package.manageable() {
+        let links = winget::show_links(text);
+        PublicMetadata {
+            description: winget::show_description(text).unwrap_or_default(),
+            publisher: links.publisher.into(),
+            license: links.license.into(),
+            website: links.website.into(),
+            notes: links.notes.into(),
+            support: links.support.into(),
+            publisher_site: links.publisher_site.into(),
+            license_site: links.license_site.into(),
+        }
+    } else if let Some(row) = &package.scoop_catalog {
+        PublicMetadata {
+            description: row.description.clone(),
+            license: row.license.clone(),
+            website: row.homepage.clone(),
+            ..PublicMetadata::default()
+        }
+    } else {
+        PublicMetadata::default()
+    }
+}
+
+fn detail_item(package: &Package, state: &State, text: &str, ready: bool) -> AppItem {
+    let mut detail = item(package, state, ready);
+    let mut public = public_details(package, text);
+    if let Some(cached) = state.icons.cached_metadata(package) {
+        public.fill_missing(cached);
+    }
+    if detail.publisher_description.is_empty() && !public.description.is_empty() {
+        if package.manageable() {
+            state
+                .icons
+                .remember_description(detail.icon_slot, &public.description);
+        }
+        detail.publisher_description = public.description.into();
+    }
+    if detail.publisher.is_empty() {
+        detail.publisher = public.publisher.into();
+    }
+    if detail.license.is_empty() {
+        detail.license = public.license.into();
+    }
+    for (target, link) in [
+        (&mut detail.website, public.website),
+        (&mut detail.notes, public.notes),
+        (&mut detail.support_site, public.support),
+        (&mut detail.publisher_site, public.publisher_site),
+        (&mut detail.license_site, public.license_site),
+    ] {
+        if let Some(url) = platform::browser_link(&link) {
+            *target = url.into();
+        }
+    }
+    if detail.publisher_site == detail.website {
+        detail.publisher_site = "".into();
+    }
+    detail.available_version = package.version.clone().into();
+    detail.installed_version = if ready {
+        package.installed.as_deref().unwrap_or_default()
+    } else {
+        ""
+    }
+    .into();
+    detail
+}
+
 fn show_detail(ui: &MainWindow, state: &mut State, package: Package, text: String, ready: bool) {
     if ready {
         let key = package.key();
@@ -732,14 +852,8 @@ fn show_detail(ui: &MainWindow, state: &mut State, package: Package, text: Strin
             state.installed.remove(&key);
         }
     }
-    let mut detail = item(&package, state, ready);
-    // A live catalog lookup supplies the latest version separately from any
-    // version reported by the installed inventory.
-    if detail.available_version.is_empty() {
-        detail.available_version = package.version.clone().into();
-    }
-    ui.set_detail(detail);
-    ui.set_detail_installed(package.installed.is_some());
+    ui.set_detail(detail_item(&package, state, &text, ready));
+    ui.set_detail_installed(ready && package.installed.is_some());
     ui.set_detail_action(
         if package.installed.is_none() {
             "Install"
@@ -805,10 +919,28 @@ fn receive(ui: &MainWindow, state: &Rc<RefCell<State>>, generation: Option<u64>,
     if !current && !diagnostic {
         return;
     }
-    if generation.is_some() && current {
+    if generation.is_some() && current && !matches!(&event, Response::DetailMetadata(..)) {
         ui.set_busy(false);
     }
     match event {
+        Response::DetailMetadata(package, text) => {
+            if s.view.page == 7
+                && s.view
+                    .details
+                    .as_ref()
+                    .is_some_and(|open| open.key() == package.key())
+            {
+                s.icons
+                    .remember_metadata(&package, || public_details(&package, &text));
+                let mut detail = detail_item(&package, &s, &text, false);
+                if detail.available_version.is_empty() {
+                    detail.available_version = ui.get_detail().available_version;
+                }
+                ui.set_detail(detail);
+                ui.set_detail_text(format!("Checking installation status…\n\n{text}").into());
+            }
+            return;
+        }
         Response::BackendError(error) => {
             s.backend = error.clone();
             ui.set_backend_status(error.clone().into());
@@ -901,7 +1033,7 @@ fn receive(ui: &MainWindow, state: &Rc<RefCell<State>>, generation: Option<u64>,
         }
         Response::ScoopDetection(available) => {
             s.scoop_available = available;
-            s.cache.retain(|(_, (p, _, _))| p.scoop_catalog.is_none());
+            s.cache.retain(|(_, (p, _))| p.scoop_catalog.is_none());
             set_scoop_status(ui, available);
             let artwork = ui.global::<Artwork>();
             artwork.invoke_scoop_changed(available);
@@ -986,12 +1118,15 @@ fn receive(ui: &MainWindow, state: &Rc<RefCell<State>>, generation: Option<u64>,
             );
         }
         Response::Details(package, text, ready) => {
+            s.icons
+                .remember_metadata(&package, || public_details(&package, &text));
             let key = package.key();
             s.cache.retain(|(k, _)| k != &key);
-            s.cache
-                .push_back((key, (package.clone(), text.clone(), ready)));
-            while s.cache.len() > 48 {
-                s.cache.pop_front();
+            if ready {
+                s.cache.push_back((key, (package.clone(), text.clone())));
+                if s.cache.len() > 48 {
+                    s.cache.pop_front();
+                }
             }
             show_detail(ui, &mut s, package, text, ready);
             ui.set_status(
@@ -999,6 +1134,38 @@ fn receive(ui: &MainWindow, state: &Rc<RefCell<State>>, generation: Option<u64>,
                     "Scoop package details loaded"
                 } else {
                     "Package details and installation state checked with WinGet"
+                }
+                .into(),
+            );
+        }
+        Response::Screenshots(shots) => {
+            let unavailable = shots.is_empty();
+            let gallery = shots
+                .into_iter()
+                .map(|shot| PackageScreenshot {
+                    preview: Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                        shot.pixels.as_raw(),
+                        shot.pixels.width(),
+                        shot.pixels.height(),
+                    )),
+                    label: shot.label.into(),
+                    credit: shot.credit.into(),
+                })
+                .collect::<Vec<_>>();
+            ui.set_gallery(ModelRc::new(VecModel::from(gallery)));
+            ui.set_screenshot_status(
+                if unavailable {
+                    "No verified screenshots found. You can try again."
+                } else {
+                    ""
+                }
+                .into(),
+            );
+            ui.set_status(
+                if unavailable {
+                    "Screenshots unavailable"
+                } else {
+                    "Screenshots loaded"
                 }
                 .into(),
             );
@@ -1047,39 +1214,38 @@ fn receive(ui: &MainWindow, state: &Rc<RefCell<State>>, generation: Option<u64>,
             }
         }
         Response::Operations(finished) => {
+            if !finished {
+                render_activity(ui, &s);
+                return;
+            }
             if s.manager.is_stopping() {
-                if finished {
-                    ui.set_status("Active operation finished. SlimStore can now close.".into());
-                }
+                ui.set_status("Active operation finished. SlimStore can now close.".into());
+                render_activity(ui, &s);
+                return;
+            }
+            s.cache.clear();
+            s.inventory_known = false;
+            s.installed.clear();
+            if ui.get_busy() || ui.get_confirm_visible() {
+                // Preserve an active search or package review. Changes are rechecked at launch.
                 render(ui, &s);
                 return;
             }
-            if finished {
-                s.cache.clear();
-                s.inventory_known = false;
-                s.installed.clear();
-                if ui.get_busy() || ui.get_confirm_visible() {
-                    // Preserve an active search or package review. Changes are rechecked at launch.
-                    render(ui, &s);
-                    return;
-                }
-                ui.set_status("Operation finished. Refreshing package state…".into());
-                match s.view.page {
-                    page if install_page(page) => s.job(ui, ReadKind::Inventory(false)),
-                    3 => s.job(ui, ReadKind::Inventory(false)),
-                    4 => s.job(ui, ReadKind::Inventory(true)),
-                    7 => {
-                        if let Some(p) = s.view.details.clone() {
-                            ui.set_detail_ready(false);
-                            s.detail_ready = false;
-                            s.job(ui, ReadKind::Details(p));
-                        }
+            ui.set_status("Operation finished. Refreshing package state…".into());
+            match s.view.page {
+                page if install_page(page) => s.job(ui, ReadKind::Inventory(false)),
+                3 => s.job(ui, ReadKind::Inventory(false)),
+                4 => s.job(ui, ReadKind::Inventory(true)),
+                7 => {
+                    if let Some(p) = s.view.details.clone() {
+                        ui.set_detail_ready(false);
+                        s.detail_ready = false;
+                        s.job(ui, ReadKind::Details(p));
                     }
-                    _ => ui.set_status(
-                        "Operation finished · refresh your library to check the current state"
-                            .into(),
-                    ),
                 }
+                _ => ui.set_status(
+                    "Operation finished · refresh your library to check the current state".into(),
+                ),
             }
         }
     }
@@ -1190,6 +1356,12 @@ fn refresh(ui: &MainWindow, state: &Rc<RefCell<State>>) {
     }
 }
 
+fn clear_gallery(ui: &MainWindow) {
+    ui.set_preview_index(0);
+    ui.set_gallery(ModelRc::default());
+    ui.set_screenshot_status("".into());
+}
+
 fn open_app(ui: &MainWindow, state: &Rc<RefCell<State>>, id: &str) {
     let mut s = state.borrow_mut();
     let package = if s.view.page == INSTALL_QUEUE_PAGE {
@@ -1204,11 +1376,21 @@ fn open_app(ui: &MainWindow, state: &Rc<RefCell<State>>, id: &str) {
     s.remember();
     s.cancel_read(ui);
     s.view.page = 7;
+    present_details(ui, &mut s, package);
+    render(ui, &s);
+}
+
+fn present_details(ui: &MainWindow, s: &mut State, package: Package) {
     ui.set_details_expanded(false);
-    ui.set_preview_index(0);
+    clear_gallery(ui);
     ui.set_detail_action("Install".into());
-    ui.set_detail(item(&package, &s, false));
+    let mut detail = detail_item(&package, s, "", false);
+    if package.installed.is_some() && package.manageable() {
+        detail.available_version = package.available.as_deref().unwrap_or_default().into();
+    }
+    ui.set_detail(detail);
     ui.set_detail_ready(false);
+    ui.set_detail_actionable(false);
     ui.set_detail_installed(false);
     ui.set_detail_scoop_result(package.scoop_catalog.is_some());
     ui.set_detail_scoop_manifest(
@@ -1221,17 +1403,16 @@ fn open_app(ui: &MainWindow, state: &Rc<RefCell<State>>, id: &str) {
     ui.set_detail_text("Loading package details…".into());
     s.view.details = Some(package.clone());
     s.detail_ready = false;
-    if let Some((_, (package, text, ready))) = s
+    if let Some((_, (package, text))) = s
         .cache
         .iter()
         .find(|(key, _)| key == &package.key())
         .cloned()
     {
-        show_detail(ui, &mut s, package, text, ready);
+        show_detail(ui, s, package, text, true);
     } else {
         s.job(ui, ReadKind::Details(package));
     }
-    render(ui, &s);
 }
 
 fn prepare_action(ui: &MainWindow, state: &Rc<RefCell<State>>, action: &str) {
@@ -1244,6 +1425,18 @@ fn prepare_action(ui: &MainWindow, state: &Rc<RefCell<State>>, action: &str) {
         return;
     }
     match action {
+        "load-screenshots" => {
+            if s.view.page == 7
+                && !ui.get_busy()
+                && let Some(package) = &s.view.details
+                && screenshots::available(package)
+            {
+                let package = package.clone();
+                ui.set_screenshot_status("".into());
+                s.job(ui, ReadKind::Screenshots(package));
+            }
+            return;
+        }
         "search-scoop" => {
             if !ui.get_busy() {
                 s.search_scoop(ui, false);
@@ -1295,6 +1488,8 @@ fn prepare_action(ui: &MainWindow, state: &Rc<RefCell<State>>, action: &str) {
             if !ui.get_busy() {
                 if s.view.page == 3 {
                     s.uninstall_selection.clear();
+                } else if s.view.page == 4 {
+                    s.selected.clear();
                 } else if install_page(s.view.page) || s.view.page == INSTALL_QUEUE_PAGE {
                     s.install_selection.clear();
                     if s.view.page == INSTALL_QUEUE_PAGE {
@@ -1447,11 +1642,12 @@ fn apply_settings(ui: &MainWindow, s: &mut State, save: bool) {
     s.settings.accent = ui.get_accent_enabled();
     s.settings.source_consent = ui.get_source_consent();
     let online = ui.get_online_icons();
+    let had_cache = s.settings.icon_cache;
+    s.settings.icon_cache = ui.get_persistent() && ui.get_icon_cache();
     s.settings.scoop_catalog_cache = ui.get_scoop_catalog_cache();
     s.settings.scoop_additional_buckets = ui.get_scoop_additional_buckets();
     s.settings.offline_icons_only = !online;
     s.icons.enabled.store(online, Ordering::Relaxed);
-    ui.global::<Artwork>().set_online_enabled(online);
     ui.set_dark(match s.settings.theme {
         1 => false,
         2 => true,
@@ -1470,6 +1666,20 @@ fn apply_settings(ui: &MainWindow, s: &mut State, save: bool) {
                 ui.set_persistent(false);
             }
         }
+    }
+    let cache = s.storage.enabled && s.settings.icon_cache;
+    ui.set_icon_cache(cache);
+    s.icons.set_disk_cache(cache);
+    ui.global::<Artwork>().set_online_enabled(online || cache);
+    ui.global::<Artwork>().set_metadata_enabled(online || cache);
+    if save
+        && had_cache
+        && !cache
+        && let Err(error) = s.storage.clear_cache()
+    {
+        ui.set_storage_status(
+            format!("Package cache disabled. Could not remove a cache file: {error}").into(),
+        );
     }
 }
 
@@ -1515,6 +1725,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_theme_index(settings.theme.min(2) as i32);
     ui.set_source_consent(settings.source_consent);
     ui.set_online_icons(!settings.offline_icons_only);
+    ui.set_icon_cache(settings.icon_cache);
     set_scoop_status(&ui, scoop.is_some());
     ui.set_scoop_catalog_cache(settings.scoop_catalog_cache);
     ui.set_scoop_additional_buckets(settings.scoop_additional_buckets);
@@ -1530,7 +1741,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         catalog: None,
         manager,
         scoop_available: scoop.is_some(),
-        icons: icons::attach(&ui, !settings.offline_icons_only, scoop.clone()),
+        icons: icons::attach(
+            &ui,
+            !settings.offline_icons_only,
+            scoop.clone(),
+            storage.clone(),
+            settings.icon_cache,
+        ),
         view: View {
             details: None,
             page: 0,
@@ -1619,9 +1836,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     match s.view.page {
                         7 => {
                             if let Some(p) = s.view.details.clone() {
-                                s.detail_ready = false;
-                                ui.set_detail_ready(false);
-                                s.job(&ui, ReadKind::Details(p));
+                                present_details(&ui, &mut s, p);
                             }
                         }
                         3 => s.job(&ui, ReadKind::Inventory(false)),
@@ -1940,13 +2155,16 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_package_link(move |field| {
             if let Some(ui) = w.upgrade() {
                 let detail = ui.get_detail();
-                let url = if field == "website" {
-                    detail.website
-                } else {
-                    detail.notes
+                let url = match field.as_str() {
+                    "website" => detail.website,
+                    "notes" => detail.notes,
+                    "support" => detail.support_site,
+                    "publisher" => detail.publisher_site,
+                    "license" => detail.license_site,
+                    _ => return,
                 };
-                if url.starts_with("https://") {
-                    platform::open(url.as_str());
+                if let Some(url) = platform::browser_link(url.as_str()) {
+                    platform::open(url);
                 }
             }
         });
@@ -2090,6 +2308,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let _smoke_timer = crate::smoke::install(&ui);
     slint::run_event_loop()?;
     ui.hide()?;
+    state.borrow().icons.finish();
     state.borrow().manager.stop_after_active();
     state.borrow().generation.store(u64::MAX, Ordering::Relaxed);
     let _ = state.borrow().sender.send(Job {

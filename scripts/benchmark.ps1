@@ -1,8 +1,9 @@
-param([string]$Executable = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\SlimStore.exe'))
+param(
+    [string]$Executable = (Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\SlimStore.exe'),
+    [string]$ReportDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) 'verification')
+)
 $ErrorActionPreference = 'Stop'
-$workspace = Split-Path -Parent $PSScriptRoot
-$verification = Join-Path $workspace 'verification'
-New-Item -ItemType Directory -Force -Path $verification | Out-Null
+$verification = (New-Item -ItemType Directory -Force -Path $ReportDirectory).FullName
 $exe = (Resolve-Path -LiteralPath $Executable).Path
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $p = Start-Process -FilePath $exe -WindowStyle Hidden -PassThru -RedirectStandardError (Join-Path $verification 'benchmark-stderr.txt')
@@ -35,7 +36,7 @@ try {
     $modules = @($p.Modules | Select-Object ModuleName,FileName)
     $modules | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath (Join-Path $verification 'loaded-modules.json')
     $result | ConvertTo-Json | Set-Content -Encoding utf8 -LiteralPath (Join-Path $verification 'benchmark.json')
-    & (Join-Path $PSScriptRoot 'capture.ps1') -ProcessId $p.Id -Destination (Join-Path $workspace 'docs\screenshot-home.png')
+    & (Join-Path $PSScriptRoot 'capture.ps1') -ProcessId $p.Id -Destination (Join-Path $verification 'benchmark-home.png')
     [PSCustomObject]$result
 } finally {
     if (-not $p.HasExited) { $p.CloseMainWindow() | Out-Null; if (-not $p.WaitForExit(15000)) { throw 'SlimStore did not close normally' } }

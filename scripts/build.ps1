@@ -34,8 +34,15 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Release compilation failed' }
     $dist = Join-Path $workspace 'dist'
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
-    $extra = @(Get-ChildItem -LiteralPath $dist -Force | Where-Object Name -ne 'SlimStore.exe')
-    if ($extra.Count -gt 0) { throw 'dist must contain only SlimStore.exe. Move any unrelated files out before building.' }
+    if ((Get-Item -LiteralPath $dist -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'The dist folder must be a regular directory.'
+    }
+    $extra = @(Get-ChildItem -LiteralPath $dist -Force | Where-Object {
+        ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        ($_.PSIsContainer -and $_.Name -ne 'SlimStore-data') -or
+        (-not $_.PSIsContainer -and $_.Name -ne 'SlimStore.exe')
+    })
+    if ($extra.Count -gt 0) { throw 'dist can contain SlimStore.exe and the optional SlimStore-data folder. Move unexpected entries out before building.' }
     $targetDirectory = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $workspace 'target' }
     $built = Join-Path $targetDirectory 'x86_64-pc-windows-msvc\release\SlimStore.exe'
     if ($SigningThumbprint) {

@@ -82,6 +82,9 @@ impl Session {
         limit: usize,
         enabled: impl Fn() -> bool,
     ) -> Option<Vec<u8>> {
+        if !enabled() {
+            return None;
+        }
         let server =
             HttpHandle::from_raw(unsafe { WinHttpConnect(self.0.0, wide(host).as_ptr(), 443, 0) })?;
         let request = HttpHandle::from_raw(unsafe {
@@ -125,6 +128,22 @@ impl Session {
             return None;
         }
 
+        let mut content_length = 0u32;
+        size = size_of::<u32>() as u32;
+        if unsafe {
+            WinHttpQueryHeaders(
+                request.0,
+                WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+                null(),
+                (&raw mut content_length).cast(),
+                &mut size,
+                null_mut(),
+            )
+        } != 0
+            && content_length as usize > limit
+        {
+            return None;
+        }
         let mut bytes = Vec::new();
         let mut block = [0u8; 8192];
         while enabled() && start.elapsed() < Duration::from_secs(8) {

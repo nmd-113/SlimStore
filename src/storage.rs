@@ -20,6 +20,28 @@ const MAX_SETTINGS: u64 = 16_384;
 const MAX_CATALOG: u64 = 6 * 1024 * 1024;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Copy)]
+pub enum CacheFile {
+    Icons,
+    Metadata,
+}
+
+impl CacheFile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Icons => "icons-v1.bin",
+            Self::Metadata => "app-data-v1.bin",
+        }
+    }
+
+    fn limit(self) -> u64 {
+        match self {
+            Self::Icons => 4 * 1024 * 1024,
+            Self::Metadata => 2 * 1024 * 1024,
+        }
+    }
+}
+
 fn check_storage_entry(metadata: &fs::Metadata, directory: bool) -> io::Result<()> {
     if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || if directory {
@@ -99,6 +121,7 @@ pub struct Settings {
     pub accent: bool,
     pub source_consent: bool,
     pub offline_icons_only: bool,
+    pub icon_cache: bool,
     pub scoop_catalog_cache: bool,
     pub scoop_additional_buckets: bool,
 }
@@ -140,6 +163,10 @@ impl Storage {
         fs::create_dir_all(&self.dir)?;
         let dir = open_directory(&self.dir)?;
         let _lock = SettingsLock::acquire(&dir)?;
+        self.replace_atomic(name, bytes)
+    }
+
+    fn replace_atomic(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         let target = self.dir.join(name);
         check_settings_path(&target)?;
         let time = SystemTime::now()
@@ -164,6 +191,64 @@ impl Storage {
         result
     }
 
+    pub fn read_cache(&self, file: CacheFile) -> io::Result<Vec<u8>> {
+        self.read_bounded(file.name(), file.limit())
+    }
+
+    pub fn update_cache(
+        &self,
+        file: CacheFile,
+        merge: impl FnOnce(Option<Vec<u8>>) -> Option<Vec<u8>>,
+    ) -> io::Result<()> {
+        let dir = open_directory(&self.dir)?;
+        let _lock = SettingsLock::acquire(&dir)?;
+        // A different window may have turned off persistence since this one opened.
+        if !self
+            .saved_settings()
+            .is_some_and(|settings| settings.icon_cache)
+        {
+            return Ok(());
+        }
+        let Some(bytes) = merge(self.read_cache(file).ok()) else {
+            return Ok(());
+        };
+        if bytes.len() as u64 > file.limit() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Package cache is too large",
+            ));
+        }
+        self.replace_atomic(file.name(), &bytes)
+    }
+
+    pub fn clear_cache(&self) -> io::Result<()> {
+        let result = (|| {
+            let dir = open_directory(&self.dir)?;
+            let _lock = SettingsLock::acquire(&dir)?;
+            if self
+                .saved_settings()
+                .is_some_and(|settings| settings.icon_cache)
+            {
+                return Ok(());
+            }
+            let remove = |file: CacheFile| {
+                let path = self.dir.join(file.name());
+                check_settings_path(&path)?;
+                match fs::remove_file(path) {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                    result => result,
+                }
+            };
+            let icons = remove(CacheFile::Icons);
+            let metadata = remove(CacheFile::Metadata);
+            icons.and(metadata)
+        })();
+        match result {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    }
+
     pub fn read_catalog(&self, name: &str) -> io::Result<Vec<u8>> {
         self.read_bounded(name, MAX_CATALOG)
     }
@@ -178,11 +263,14 @@ impl Storage {
         self.write_atomic(name, bytes)
     }
 
-    pub fn load(&mut self) -> Settings {
-        let result = self
-            .read_bounded("settings.json", MAX_SETTINGS)
+    fn saved_settings(&self) -> Option<Settings> {
+        self.read_bounded("settings.json", MAX_SETTINGS)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    }
+
+    pub fn load(&mut self) -> Settings {
+        let result = self.saved_settings();
         self.enabled = result.is_some();
         result.unwrap_or_default()
     }

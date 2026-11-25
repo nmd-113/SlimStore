@@ -1,39 +1,16 @@
 // Assets are matched using the canonical community WinGet package ID.
 // See docs/ARTWORK.md for source and attribution.
-export struct PackageScreenshot { thumbnail: image, preview: image, label: string, credit: string }
+export struct PackageScreenshot { preview: image, label: string, credit: string }
 
 export global Artwork {
     in property <bool> online-enabled: false;
+    in property <bool> metadata-enabled: false;
     in property <bool> local-enabled: false;
     in property <[image]> online-icons;
     in property <[image]> local-icons;
+    in property <[string]> descriptions;
     callback request-icon(int);
     callback scoop-changed(bool);
-    callback icon-result(int, image, bool, bool);
-
-    public pure function gallery(id: string) -> [PackageScreenshot] {
-        if id == "Microsoft.PowerToys" {
-            return [
-                { label: "FancyZones", credit: "Microsoft Learn / CC BY 4.0", thumbnail: @image-url("../assets/catalog/powertoys-zones-thumb.png"), preview: @image-url("../assets/catalog/powertoys-zones.png") },
-                { label: "Command Palette settings", credit: "Microsoft Learn / CC BY 4.0", thumbnail: @image-url("../assets/catalog/powertoys-palette-thumb.png"), preview: @image-url("../assets/catalog/powertoys-palette.png") },
-            ];
-        }
-        if id == "HandBrake.HandBrake" {
-            return [
-                { label: "Encoding queue", credit: "HandBrake Team / CC BY-SA 4.0 / Version 1.8", thumbnail: @image-url("../assets/catalog/handbrake-queue-thumb.png"), preview: @image-url("../assets/catalog/handbrake-queue.png") },
-                { label: "Audio defaults", credit: "HandBrake Team / CC BY-SA 4.0 / Version 1.8", thumbnail: @image-url("../assets/catalog/handbrake-audio-thumb.png"), preview: @image-url("../assets/catalog/handbrake-audio.png") },
-            ];
-        }
-        if id == "Microsoft.WindowsTerminal" {
-            return [
-                { label: "Split panes", credit: "Microsoft / MIT", thumbnail: @image-url("../assets/catalog/terminal-panes-thumb.png"), preview: @image-url("../assets/catalog/terminal-panes.png") },
-            ];
-        }
-        if id == "Microsoft.VisualStudioCode" {
-            return [
-                { label: "Editor and sidebar", credit: "Microsoft / CC BY 3.0 US", thumbnail: @image-url("../assets/catalog/vscode-editor-thumb.png"), preview: @image-url("../assets/catalog/vscode-editor.png") },
-            ];
-        }
-        return [];
-    }
+    callback description-result(int, string, bool, bool);
+    callback icon-result(int, image, bool, bool, bool);
 }

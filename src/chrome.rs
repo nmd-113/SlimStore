@@ -155,11 +155,19 @@ fn hit_test(hwnd: HWND, p: POINT) -> u32 {
             return HTNOWHERE;
         }
         let dpi = GetDpiForWindow(hwnd).max(96);
-        let (scale, header) = with_window(|ui| {
+        let (scale, header, modal) = with_window(|ui| {
             use slint::ComponentHandle;
-            (ui.window().scale_factor(), ui.get_header_height())
+            (
+                ui.window().scale_factor(),
+                ui.get_header_height(),
+                ui.get_modal_open(),
+            )
         })
-        .unwrap_or((dpi as f32 / 96., HEADER));
+        .unwrap_or((dpi as f32 / 96., HEADER, false));
+        // Modal overlays cover the caption and resize hit areas inside the client.
+        if modal {
+            return HTCLIENT;
+        }
         let px = |logical: f32| (scale * logical).round() as i32;
         let right = rect.right - p.x;
         let bottom = rect.bottom - p.y;

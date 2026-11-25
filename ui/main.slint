@@ -1,10 +1,10 @@
 import { Colors } from "theme.slint";
 import { AppCombo } from "combo.slint";
 import { Artwork, PackageScreenshot } from "artwork.slint";
-export { Artwork }
+export { Artwork, PackageScreenshot }
 import { Button, LineEdit, CheckBox, ScrollView, ListView, ProgressIndicator, Palette } from "std-widgets.slint";
 
-export struct AppItem { id: string, name: string, publisher: string, description: string, publisher-description: string, summary: string, license: string, website: string, notes: string, art-id: string, icon-slot: int, installed-version: string, available-version: string, source: string, status: string, status-version: string, initials: string, category: string, selected: bool, actionable: bool, tint: color }
+export struct AppItem { id: string, name: string, publisher: string, description: string, publisher-description: string, summary: string, license: string, website: string, notes: string, support-site: string, publisher-site: string, license-site: string, icon-slot: int, installed-version: string, available-version: string, source: string, status: string, status-version: string, initials: string, category: string, selected: bool, actionable: bool, tint: color }
 export struct AppRow { first: AppItem, second: AppItem, third: AppItem }
 export struct ActivityItem { key: string, title: string, status: string, summary: string, detail: string, cancellable: bool, reviewable: bool }
 
@@ -193,12 +193,14 @@ component AppIcon inherits Rectangle {
     in property <AppItem> item;
     property <bool> can-load: Artwork.online-enabled && root.item.icon-slot > 0;
     property <bool> can-load-local: Artwork.local-enabled && root.item.icon-slot > 0;
+    property <bool> can-load-metadata: Artwork.metadata-enabled && root.item.icon-slot > 0;
     property <image> local-art: Artwork.local-icons[root.item.icon-slot];
     property <image> art: root.local-art.width > 0 ? root.local-art : root.can-load ? Artwork.online-icons[root.item.icon-slot] : @image-url("");
     function fetch() { if root.item.icon-slot > 0 { Artwork.request-icon(root.item.icon-slot); } }
     init => { root.fetch(); }
     changed can-load => { root.fetch(); }
     changed can-load-local => { root.fetch(); }
+    changed can-load-metadata => { root.fetch(); }
     changed item => { root.fetch(); }
     border-radius: 12px;
     background: art.width > 0 ? Colors.elevated : root.item.tint;
@@ -233,9 +235,12 @@ component AppCard inherits Rectangle {
     background: Colors.panel;
     border-radius: Colors.card-radius;
     border-width: 1px;
-    border-color: hover.has-hover ? Colors.accent : Colors.border;
+    border-color: hover.has-hover || root.item.selected ? Colors.accent : Colors.border;
     animate border-color { duration: 140ms; }
-    hover := TouchArea { clicked => { root.open(root.item.id); } }
+    hover := TouchArea {
+        enabled: root.selection-mode && root.item.actionable && root.selection-enabled;
+        clicked => { root.select(root.item.id, !root.item.selected); }
+    }
     VerticalLayout { padding-left: 16px; padding-right: 16px; padding-top: 12px; padding-bottom: 12px; spacing: 6px;
         HorizontalLayout { height: 56px; spacing: 8px;
             AppIcon { width: 56px; height: 56px; item: root.item; }
@@ -246,29 +251,25 @@ component AppCard inherits Rectangle {
                 }
             }
             if root.selection-mode && root.item.actionable: Rectangle {
-                width: 52px; height: 34px; cross-axis-self-alignment: center;
-                Text { x: 23px; width: 29px; height: parent.height; text: "Select"; font-size: 10px;
-                    color: Colors.muted; vertical-alignment: center; accessible-role: none; }
+                width: 18px; height: 56px;
                 CheckBox {
-                    width: parent.width; height: parent.height; enabled: root.selection-enabled;
+                    x: parent.width - self.width; y: 0px; width: 18px; height: 18px; enabled: root.selection-enabled;
                     accessible-label: "Select " + root.item.name; checked: root.item.selected;
                     toggled => { root.select(root.item.id, self.checked); }
                 }
             }
         }
-        Text { text: root.item.description; color: Colors.muted; font-size: 12px; wrap: word-wrap; overflow: elide; max-lines: 3; height: 52px; }
+        Text { text: root.item.description != "" ? root.item.description : Artwork.descriptions[root.item.icon-slot]; color: Colors.muted; font-size: 12px; wrap: word-wrap; overflow: elide; max-lines: 3; height: 52px; }
         HorizontalLayout { spacing: 8px;
             PackageStatus { item: root.item; horizontal-stretch: 1; }
-            Button { text: "Details"; width: 84px; height: 36px; clicked => { root.open(root.item.id); } }
+            Button { text: "Details"; width: 84px; height: 36px; accessible-label: "Details for " + root.item.name; clicked => { root.open(root.item.id); } }
         }
     }
-    accessible-role: button;
-    accessible-label: "Details for " + item.name;
-    accessible-action-default => { root.open(root.item.id); }
 }
 
 component AppListRow inherits Rectangle {
     in property <AppItem> item;
+    property <string> card-description: root.item.description != "" ? root.item.description : Artwork.descriptions[root.item.icon-slot];
     in property <bool> selection-mode;
     in property <bool> review-mode;
     in property <bool> selection-enabled: true;
@@ -278,31 +279,41 @@ component AppListRow inherits Rectangle {
     background: Colors.panel;
     border-radius: Colors.card-radius;
     border-width: 1px;
-    border-color: hover.has-hover ? Colors.accent : Colors.border;
-    hover := TouchArea { clicked => { root.open(root.item.id); } }
+    border-color: hover.has-hover || (root.selection-mode && root.item.selected) ? Colors.accent : Colors.border;
+    hover := TouchArea {
+        enabled: root.selection-mode && root.item.actionable && root.selection-enabled;
+        clicked => { root.select(root.item.id, !root.item.selected); }
+    }
     HorizontalLayout { padding-left: 16px; padding-right: 16px; spacing: 14px;
         Rectangle { width: 52px;
             AppIcon { width: 52px; height: 52px; y: (parent.height - self.height) / 2; item: root.item; }
         }
-        VerticalLayout { cross-axis-self-alignment: center; horizontal-stretch: 1; vertical-stretch: 0; spacing: 4px;
+        VerticalLayout { cross-axis-self-alignment: center; horizontal-stretch: 1; vertical-stretch: 0; min-width: 0px; spacing: 4px;
             Text { text: root.item.name; color: Colors.text; font-size: 14px; font-weight: 600; overflow: elide; }
             if root.review-mode || root.item.publisher != "": Text { text: root.review-mode ? root.item.id : root.item.publisher; color: Colors.muted; font-size: 11px; overflow: elide; }
+            if root.card-description != "": Text { text: root.card-description; color: Colors.muted; font-size: 12px; overflow: elide; }
         }
         PackageStatus { item: root.item; width: clamp(root.width * 0.24, 112px, 200px); }
-        if root.selection-mode: Rectangle { width: 66px;
-            if root.item.actionable: CheckBox {
-                x: 0px; y: (parent.height - self.height) / 2; height: 34px;
-                text: "Select"; checked: root.item.selected; enabled: root.selection-enabled;
-                toggled => { root.select(root.item.id, self.checked); }
-            }
-        }
         if root.review-mode: Button {
             cross-axis-self-alignment: center; text: "Remove"; width: 76px; height: 36px;
             accessible-label: "Remove " + root.item.name + " from Install Queue";
             enabled: root.selection-enabled;
             clicked => { root.select(root.item.id, false); }
         }
-        Button { cross-axis-self-alignment: center; text: "Details"; width: 92px; height: 36px; clicked => { root.open(root.item.id); } }
+        if root.selection-mode: Rectangle {
+            width: 18px; height: 18px; cross-axis-self-alignment: center;
+            if root.item.actionable: CheckBox {
+                width: 18px; height: 18px;
+                accessible-label: "Select " + root.item.name; checked: root.item.selected;
+                enabled: root.selection-enabled;
+                toggled => { root.select(root.item.id, self.checked); }
+            }
+        }
+        Button {
+            cross-axis-self-alignment: center; text: "Details"; width: 92px; height: 36px;
+            accessible-label: "Details for " + root.item.name;
+            clicked => { root.open(root.item.id); }
+        }
     }
 }
 
@@ -391,7 +402,10 @@ export component MainWindow inherits Window {
     in property <[string]> categories;
     in property <[string]> collections;
     in-out property <int> preview-index: 0;
-    property <[PackageScreenshot]> gallery: Artwork.gallery(root.detail.art-id);
+    in property <[PackageScreenshot]> gallery;
+    property <bool> preview-visible: root.preview-index > 0 && root.preview-index <= root.gallery.length;
+    in property <bool> screenshots-available: false;
+    in property <string> screenshot-status;
     in-out property <string> activity-log;
     in-out property <int> category-index: 0;
     in-out property <int> sort-index: 0;
@@ -406,6 +420,7 @@ export component MainWindow inherits Window {
     in-out property <bool> persistent: false;
     in-out property <bool> source-consent: false;
     in-out property <bool> online-icons: true;
+    in-out property <bool> icon-cache: false;
     in-out property <bool> accent-enabled: false;
     in-out property <int> theme-index: 0;
     in property <int> operation-count: 0;
@@ -439,10 +454,11 @@ export component MainWindow inherits Window {
     property <bool> install-page: root.page <= 2 || root.page == 8;
     property <bool> reviewing-install: root.page == 9;
     property <bool> can-select: root.install-page || root.page == 3 || root.page == 4;
-    property <int> change-count: root.page == 3 ? root.uninstall-count : root.install-count;
+    property <int> change-count: root.page == 3 ? root.uninstall-count : root.page == 4 ? root.update-count : root.install-count;
     in property <bool> maximize-hover: false;
     in property <bool> maximize-pressed: false;
     in-out property <bool> confirm-visible: false;
+    out property <bool> modal-open: root.confirm-visible || root.preview-visible || root.activity-log != "";
     in property <string> confirm-title;
     in property <string> confirm-text;
     in property <bool> confirm-agreement-required: false;
@@ -491,7 +507,7 @@ export component MainWindow inherits Window {
 
     public function sidebar-caption(x: length, y: length) -> bool {
         return x < root.sidebar-width
-            && !root.confirm-visible && root.preview-index == 0 && root.activity-log == ""
+            && !root.modal-open
             && !home-nav.contains(x,y) && !discover-nav.contains(x,y) && !categories-nav.contains(x,y)
             && !installed-nav.contains(x,y) && !updates-nav.contains(x,y)
             && !downloads-nav.contains(x,y) && !queue-nav.contains(x,y) && !settings-nav.contains(x,y);
@@ -563,10 +579,14 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
-                HorizontalLayout { spacing: 12px;
+                HorizontalLayout { spacing: 12px; cross-axis-alignment: center;
                     VerticalLayout { spacing: 5px; min-width: 0px; horizontal-stretch: 1;
                         Text { text: root.heading; color: Colors.text; font-size: 23px; font-weight: 700; wrap: word-wrap; overflow: elide; max-height: 58px; }
                         Text { text: root.subtitle; color: Colors.muted; font-size: 11px; wrap: word-wrap; }
+                    }
+                    if (root.can-select || root.reviewing-install) && root.change-count > 0: Button {
+                        text: "Clear selection"; width: 112px; height: 34px; enabled: !root.busy;
+                        clicked => { root.action("clear-selection"); }
                     }
                     if root.install-page || root.page == 3 || root.reviewing-install: Button {
                         property <string> action-label: root.page == 3 ? "Uninstall selected" : root.reviewing-install ? "Install selected" : "Review selection";
@@ -578,6 +598,8 @@ export component MainWindow inherits Window {
                             else { root.action(root.page == 3 ? "uninstall-selected" : "install-selected"); }
                         }
                     }
+                    if root.page == 4: Button { text: "Update selected"; width: 112px; height: 34px; enabled: root.update-count > 0 && !root.busy; clicked => { root.action("selected"); } }
+                    if root.page == 4: Button { text: "Update all…"; width: 92px; height: 34px; enabled: root.result-count > 0 && !root.busy; clicked => { root.action("all"); } }
                     if !root.reviewing-install: Button { text: "Refresh"; width: 82px; height: 34px; clicked => { root.refresh(); } }
                 }
                 if !root.reviewing-install: HorizontalLayout { spacing: 10px;
@@ -585,8 +607,6 @@ export component MainWindow inherits Window {
                     if root.page == 1: AppCombo { window-height: root.height; model: root.collections; current-index <=> root.collection-index; selected(value) => { root.filter(root.category-index, root.sort-index); } width: root.width < 960px ? 145px : 176px; }
                     if root.page != 0 && (root.page != 4 || root.width >= 960px): AppCombo { window-height: root.height; model: [root.page == 1 ? "Catalog order" : "Default order", "Name A–Z", "Name Z–A"]; current-index <=> root.sort-index; selected(value) => { root.filter(root.category-index, root.sort-index); } width: 128px; }
                     LayoutToggle { list-mode <=> root.list-mode; }
-                    if root.page == 4: Button { text: "Update selected"; enabled: root.update-count > 0; clicked => { root.action("selected"); } }
-                    if root.page == 4: Button { text: "Update all…"; enabled: root.result-count > 0; clicked => { root.action("all"); } }
                 }
                 if root.page == 2 && root.category-index > 0 && root.category-index < 15: Button { text: "Find more in this category through WinGet"; enabled: root.category-index > 0 && root.category-index < 15; clicked => { root.search-category(); } }
                 if root.page == 8 && root.scoop-search-available: HorizontalLayout {
@@ -634,6 +654,7 @@ export component MainWindow inherits Window {
                 }
             }
             if root.page == 7: details-area := AppScrollArea { vertical-stretch: 1;
+                property <string> publisher-description: root.detail.publisher-description != "" ? root.detail.publisher-description : Artwork.descriptions[root.detail.icon-slot];
                 VerticalLayout {
                     width: min(1000px, details-area.visible-width);
                     x: (details-area.visible-width - self.width) / 2;
@@ -661,40 +682,49 @@ export component MainWindow inherits Window {
                         Rectangle { horizontal-stretch: 1; }
                     }
                     if root.detail-scoop-result && root.detail-scoop-note != "": Text { text: root.detail-scoop-note; color: Colors.muted; wrap: word-wrap; font-size: 12px; }
-                    if root.detail.summary != "" || root.detail.publisher-description != "": Rectangle {
+                    if root.detail.summary != "" || details-area.publisher-description != "": Rectangle {
                         background: Colors.panel; border-radius: Colors.card-radius; border-width: 1px; border-color: Colors.border;
                         VerticalLayout { padding: 16px; spacing: 8px;
-                            if root.detail.summary != "": Text { text: "Overview"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                            Text { text: "Overview"; color: Colors.text; font-size: 16px; font-weight: 600; }
                             if root.detail.summary != "": Text { text: root.detail.summary; color: Colors.text; wrap: word-wrap; }
-                            if root.detail.publisher-description != "": Text { text: root.detail-scoop-result ? "Description from Scoop" : "Description from the WinGet catalog"; color: Colors.muted; font-size: 12px; font-weight: 600; }
-                            if root.detail.publisher-description != "": Text { text: root.detail.publisher-description; color: Colors.text; wrap: word-wrap; }
+                            if details-area.publisher-description != "": Text { text: root.detail-scoop-result ? "Description from Scoop" : "Description from the WinGet catalog"; color: Colors.muted; font-size: 12px; font-weight: 600; }
+                            if details-area.publisher-description != "": Text { text: details-area.publisher-description; color: Colors.text; wrap: word-wrap; }
                         }
                     }
                     Rectangle { background: Colors.panel; border-radius: Colors.card-radius; border-width: 1px; border-color: Colors.border;
                         VerticalLayout { padding: 16px; spacing: 9px;
                             Text { text: "Package information"; color: Colors.text; font-size: 16px; font-weight: 600; }
                             HorizontalLayout { spacing: 12px;
-                                VerticalLayout { horizontal-stretch: 1; spacing: 3px; Text { text: "Installed version"; color: Colors.muted; font-size: 11px; } Text { text: root.detail.installed-version != "" ? root.detail.installed-version : root.detail-ready ? "Not installed" : "Unverified"; color: Colors.text; overflow: elide; } }
+                                VerticalLayout { horizontal-stretch: 1; spacing: 3px; Text { text: "Installed version"; color: Colors.muted; font-size: 11px; } Text { text: root.detail-ready ? (root.detail.installed-version != "" ? root.detail.installed-version : "Not installed") : (root.busy ? "Checking…" : "Unverified"); color: Colors.text; overflow: elide; } }
                                 VerticalLayout { horizontal-stretch: 1; spacing: 3px; Text { text: "Catalog version"; color: Colors.muted; font-size: 11px; } Text { text: root.detail.available-version != "" ? root.detail.available-version : "Not reported"; color: Colors.text; overflow: elide; } }
                                 VerticalLayout { horizontal-stretch: 1; spacing: 3px; Text { text: "Source"; color: Colors.muted; font-size: 11px; } Text { text: root.detail.source; color: Colors.text; overflow: elide; } }
                             }
                             if root.detail.license != "": Text { text: "License  ·  " + root.detail.license; color: Colors.muted; wrap: word-wrap; }
-                            if root.detail.website != "" || root.detail.notes != "": HorizontalLayout { spacing: 8px;
+                            if root.detail.website != "" || root.detail.notes != "" || root.detail.support-site != "" || root.detail.publisher-site != "" || root.detail.license-site != "": HorizontalLayout { spacing: 8px; alignment: start;
                                 if root.detail.website != "": Button { text: "Website"; width: 90px; height: 36px; clicked => { root.package-link("website"); } }
-                                if root.detail.notes != "": Button { text: "Release notes (catalog)"; width: 164px; height: 36px; clicked => { root.package-link("notes"); } }
-                                Rectangle { horizontal-stretch: 1; }
+                                if root.detail.notes != "": Button { text: "Release notes"; width: 110px; height: 36px; clicked => { root.package-link("notes"); } }
+                                if root.detail.support-site != "": Button { text: "Support"; width: 82px; height: 36px; clicked => { root.package-link("support"); } }
+                                if root.detail.publisher-site != "": Button { text: "Publisher"; accessible-label: "Publisher website"; width: 88px; height: 36px; clicked => { root.package-link("publisher"); } }
+                                if root.detail.license-site != "": Button { text: "View license"; width: 94px; height: 36px; clicked => { root.package-link("license"); } }
                             }
                         }
                     }
-                    VerticalLayout { spacing: 8px;
-                        Text { text: "Screenshots"; color: Colors.text; font-size: 16px; font-weight: 600; }
+                    if root.screenshots-available: VerticalLayout { spacing: 8px;
+                        HorizontalLayout { spacing: 10px;
+                            Text { text: "Screenshots"; color: Colors.text; font-size: 16px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+                            if root.gallery.length == 0: Button {
+                                text: "Load screenshots online"; height: 36px; enabled: !root.busy;
+                                clicked => { root.action("load-screenshots"); }
+                            }
+                        }
+                        if root.screenshot-status != "": Text { text: root.screenshot-status; color: Colors.muted; font-size: 12px; wrap: word-wrap; }
                         if root.gallery.length > 0: HorizontalLayout { alignment: start; spacing: 12px;
                             for shot[i] in root.gallery: GalleryTile {
-                                source: shot.thumbnail; label: shot.label;
+                                source: shot.preview; label: shot.label;
                                 clicked => { root.preview-index = i + 1; }
                             }
                         }
-                        Text { text: root.gallery.length > 0 ? root.gallery[0].credit : "No verified screenshots available."; color: Colors.muted; font-size: 12px; }
+                        if root.gallery.length > 0: Text { text: root.gallery[0].credit; color: Colors.muted; font-size: 12px; }
                     }
                     HorizontalLayout {
                         Button { text: root.detail-scoop-result ? (root.details-expanded ? "Hide Scoop details" : "Show Scoop details") : (root.details-expanded ? "Hide WinGet output" : "Show full WinGet output"); height: 36px; clicked => { root.details-expanded = !root.details-expanded; } }
@@ -754,8 +784,10 @@ export component MainWindow inherits Window {
                     Rectangle { background: Colors.panel; border-radius: 12px; border-width: 1px; border-color: Colors.border;
                         VerticalLayout { padding: 14px; spacing: 8px;
                             Text { text: "Portability & privacy"; color: Colors.text; font-size: 16px; font-weight: 600; }
-                            CheckBox { text: "Save settings beside SlimStore.exe"; checked <=> root.persistent; height: 40px; toggled => { root.settings-changed(); } }
-                            CheckBox { text: "Load verified app icons online"; checked <=> root.online-icons; height: 40px; toggled => { root.settings-changed(); } }
+                            CheckBox { text: "Save settings locally"; checked <=> root.persistent; height: 40px; toggled => { root.settings-changed(); } }
+                            CheckBox { text: "Load app icons and descriptions online"; checked <=> root.online-icons; height: 40px; toggled => { root.settings-changed(); } }
+                            CheckBox { text: "Cache app icon and data locally"; checked <=> root.icon-cache; enabled: root.persistent; height: 40px; toggled => { root.settings-changed(); } }
+                            Text { text: root.persistent ? "Save downloaded icons, descriptions, and package details when you close SlimStore." : "Enable saved settings to keep app icons and details across launches."; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
                             Text { text: root.storage-status; color: Colors.muted; wrap: word-wrap; font-size: 11px; }
                             Button { text: "Clear session metadata cache"; width: 200px; height: 36px; clicked => { root.clear-cache(); } }
                         }
@@ -802,10 +834,6 @@ export component MainWindow inherits Window {
                 HorizontalLayout { padding-left: 24px; padding-right: 20px; spacing: 10px;
                     Text { text: root.busy ? "◌" : "●"; color: Colors.accent-ink; width: 15px; vertical-alignment: center; }
                     Text { text: root.status; color: Colors.muted; font-size: 11px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                    if (root.install-page || root.reviewing-install || root.page == 3) && root.change-count > 0: Button {
-                        text: "Clear selection"; height: 28px; cross-axis-self-alignment: center; enabled: !root.busy;
-                        clicked => { root.action("clear-selection"); }
-                    }
                 }
             }
         }
@@ -816,7 +844,7 @@ export component MainWindow inherits Window {
         x: 0px; y: 0px; width: root.width; height: root.height;
         border-width: 1px; border-color: Colors.dark ? #3b4558 : #cbd3df;
     }
-    if root.preview-index > 0 && root.preview-index <= root.gallery.length: Rectangle {
+    if root.preview-visible: Rectangle {
         x: 0; y: 0; width: root.width; height: root.height; background: #000000ae;
         TouchArea { clicked => { root.preview-index = 0; } }
         preview-focus := FocusScope {

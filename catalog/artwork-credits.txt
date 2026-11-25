@@ -19,6 +19,5 @@ https://github.com/microsoft/terminal/blob/cf5e6bf22727a251aced8bc30491c87428a4e
 Visual Studio Code editor and sidebar: Microsoft, CC BY 3.0 US. Resized for display.
 https://github.com/microsoft/vscode-docs/blob/3d196e838cf2a85ced6b8ac679319de42954c576/LICENSE.md
 
-SlimStore no longer bundles package icons. The application logo is SlimStore's own
-branding. Online package artwork is fetched on demand from the indexed sources
-listed in docs/ARTWORK.md.
+SlimStore fetches package icons and screenshots on demand from the indexed sources
+listed in docs/ARTWORK.md. The bundled application logo is SlimStore's own branding.

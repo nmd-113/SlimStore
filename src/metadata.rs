@@ -43,8 +43,42 @@ pub fn catalog() -> &'static [Curated] {
     })
 }
 
+pub fn card_description(text: &str) -> String {
+    plain_text(text, 512)
+}
+
+pub fn plain_text(text: &str, limit: usize) -> String {
+    let mut result = String::new();
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            if !result.is_empty() && !result.ends_with(' ') {
+                result.push(' ');
+            }
+        } else if !ch.is_control()
+            && !matches!(ch, '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        {
+            if result.len() + ch.len_utf8() > limit {
+                return format!("{}…", result.trim_end());
+            }
+            result.push(ch);
+        }
+    }
+    result.truncate(result.trim_end().len());
+    result
+}
+
 pub fn curated(id: &str) -> Option<&'static Curated> {
-    catalog().iter().find(|p| p.id.eq_ignore_ascii_case(id))
+    use std::{collections::HashMap, sync::OnceLock};
+    static BY_ID: OnceLock<HashMap<String, &'static Curated>> = OnceLock::new();
+    BY_ID
+        .get_or_init(|| {
+            catalog()
+                .iter()
+                .map(|p| (p.id.to_ascii_lowercase(), p))
+                .collect()
+        })
+        .get(&id.to_ascii_lowercase())
+        .copied()
 }
 
 pub fn category(id: &str) -> &'static str {
@@ -63,11 +97,13 @@ pub const COLLECTIONS: &[&str] = &[
 ];
 
 pub fn in_collection(id: &str, index: usize) -> bool {
+    if index == 0 {
+        return true;
+    }
     let Some(entry) = curated(id) else {
-        return index == 0;
+        return false;
     };
     match index {
-        0 => true,
         1 | 2 => entry.shelf == COLLECTIONS[index],
         3 => entry.category == "Development",
         4..=6 => entry.category == COLLECTIONS[index],

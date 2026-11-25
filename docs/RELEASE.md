@@ -1,6 +1,6 @@
 # Publishing SlimStore on GitHub
 
-SlimStore uses a three-part Cargo version and Git tag, such as `1.0.0` and `v1.0.0`. The Windows file and product versions include a fourth component, such as `1.0.0.0`.
+SlimStore uses a three-part Cargo version and Git tag, such as `1.0.1` and `v1.0.1`. The Windows file and product versions include a fourth component, such as `1.0.1.0`.
 
 ## Build and review
 
@@ -17,14 +17,14 @@ The GitHub workflow also builds the same three assets on a version tag or a manu
 | Asset | Use |
 | --- | --- |
 | `dist/SlimStore.exe` | Portable Windows x64 app |
-| `release/SlimStore-1.0.0-source.zip` | Matching SlimStore source, assets, build instructions, and license notices |
+| `release/SlimStore-1.0.1-source.zip` | Matching SlimStore source, assets, build instructions, and license notices |
 | `release/SHA256SUMS.txt` | SHA-256 hashes for the EXE and source ZIP |
 
 ## Create the release
 
-1. Commit the project files to the GitHub repository. The generated build, release, and local data folders are ignored by Git.
-2. Tag the matching commit as `v1.0.0`, then push the commit and tag.
-3. Create a draft release for the tag, use the matching [changelog entry](../CHANGELOG.md), and attach all three assets. Verify their hashes. If shipping a signed EXE, generate checksums after signing.
+1. Set the new Cargo and Windows manifest versions and move the unreleased changes into a versioned [changelog entry](../CHANGELOG.md). For each release, build and package from the same source revision.
+2. Commit the project files, create the matching version tag, then push the commit and tag. The generated build, release, and local data folders are ignored by Git.
+3. Create a draft release for the tag, use the changelog entry, and attach all three assets. Verify their hashes. If shipping a signed EXE, generate checksums after signing.
 4. Make the matching source and required dependency source and notices available alongside the binary. [Third-party notices](THIRD-PARTY.md)
 5. Publish the reviewed draft.
 

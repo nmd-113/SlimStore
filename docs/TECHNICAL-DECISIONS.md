@@ -23,7 +23,7 @@ The isolated `winget.rs` compatibility adapter:
 - Resolves WinGet from the registered Microsoft App Installer package through Windows package APIs. Commands use separate arguments and exact IDs. The community source check verifies the exported endpoint, package identifier, type, and trust flags.
 - Reads column positions from each table header, counts Unicode display width, and identifies packages from the ID column. Informational footers stay outside the inventory.
 - Rejects uncertain exact matches, truncated IDs, and unsupported layouts. WinGet remains the authority on applicability, version comparisons, and pins.
-- Displays `show` metadata verbatim in the user's system language. This preserves real publisher, description, license, URLs, tags, release notes, and installer information without assuming English labels. Missing fields are never invented.
+- Keeps the full `show` output in the user's system language. Details also display recognized description, publisher, license, and HTTPS link fields from that response. The browser opens validated links only when clicked.
 - Checks installed state and the exact candidate before review, then rechecks before execution. Install and update commands pass the reviewed version explicitly. A fresh install uses WinGet’s `--no-upgrade` option to protect against changes to inventory during launch. [WinGet install options](https://learn.microsoft.com/en-us/windows/package-manager/winget/install)
 
 The adapter is a compatibility compromise. It is not a documented machine-readable WinGet schema. Future CLI formats, names containing certain unusual ID-like tokens, multiword localized unknown-version strings, and truncated old-client output can require adapter updates. No fallback silently converts an uncertain row into an install command.
@@ -52,7 +52,7 @@ The embedded catalog is an editorial selection of exact IDs. Featured Apps, Top 
 
 The category browser can search the corresponding WinGet manifest tags. Search is bounded to 250 results per request. Sorting uses application names or editorial order.
 
-Visible cards try local Scoop executable resources and checksum-pinned artwork first. A miss triggers exact package metadata lookup, which can supply a hash-pinned WinGet icon or identify a publisher or project for dynamic discovery. UniGetUI metadata supplies candidates and the package manifest establishes project identity. SlimStore bounds network and image sizes and keeps decoded icons in memory. [Artwork source and selection](ARTWORK.md)
+Visible cards try local Scoop executable resources, the opt-in portable icon cache, and checksum-pinned artwork. A miss triggers exact package metadata lookup, which can supply a hash-pinned WinGet icon or identify a publisher or project for dynamic discovery. UniGetUI metadata supplies candidates and the package manifest establishes project identity. SlimStore bounds network and image sizes. [Artwork source and selection](ARTWORK.md)
 
 ### Scoop install fallback
 
@@ -66,7 +66,7 @@ Settings and metadata start in memory. Opt-in settings are saved to `SlimStore-d
 
 SlimStore reads Windows' theme/accent registry values; it never changes them. System theme is detected on startup and when System is selected. Theme changes made outside SlimStore during the session may need reselecting System. The optional accent affects SlimStore highlights; Slint's built-in Fluent controls can also use the system accent.
 
-With online icons enabled, visible cards can request package metadata and artwork from WinGet, GitHub, and verified project hosts. Decoded icons stay in memory. Scoop catalog refreshes and install reviews contact GitHub independently of the icon setting. The system WinGet and publisher installers manage their own logs and telemetry. [Microsoft WinGet settings](https://github.com/microsoft/winget-cli/blob/master/doc/Settings.md#telemetry)
+With online icons enabled, visible cards can request package metadata and artwork from WinGet, GitHub, and verified project hosts. SlimStore keeps decoded icons and public metadata in memory by default. The optional cache saves bounded thumbnail and public metadata files beside the executable on close. The **Load screenshots online** action can contact GitHub and verified project hosts while Details is open. Scoop catalog refreshes and install reviews contact GitHub independently of the icon setting. The system WinGet and publisher installers manage their own logs and telemetry. [Microsoft WinGet settings](https://github.com/microsoft/winget-cli/blob/master/doc/Settings.md#telemetry)
 
 ## Sources
 

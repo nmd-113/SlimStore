@@ -99,6 +99,39 @@ pub fn open(target: &str) {
     }
 }
 
+/// Accept direct HTTPS browser links with a DNS host and no embedded credentials.
+pub fn browser_link(value: &str) -> Option<&str> {
+    if value.len() > 2048
+        || value
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || matches!(c, '\\' | '"' | '<' | '>'))
+    {
+        return None;
+    }
+    let host = value
+        .strip_prefix("https://")?
+        .split(['/', '?', '#'])
+        .next()?;
+    let valid_host = host.len() <= 253
+        && host.contains('.')
+        && host
+            .rsplit('.')
+            .next()?
+            .as_bytes()
+            .first()?
+            .is_ascii_alphabetic()
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        });
+    valid_host.then_some(value)
+}
+
 pub fn information(text: &str, cancel: bool) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         IDOK, MB_ICONINFORMATION, MB_OK, MB_OKCANCEL, MessageBoxW,

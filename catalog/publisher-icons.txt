@@ -92,3 +92,9 @@ WiresharkFoundation.Wireshark|https://www.wireshark.org/favicon.ico|b867661c7a0e
 Yubico.YubikeyManager|https://raw.githubusercontent.com/Yubico/yubikey-manager-qt/28dc02d11b081683b59d16d12043aaa3c0a6c75f/resources/icons/ykman.png|bfe790fcd053dc66f354f994839033b1ff12540af1e4af089a6a03edd86d5dc0
 Zen-Team.Zen-Browser|https://zen-browser.app/favicon.ico|a7e270d9b2e2be85f311fc35d81ac7ea92e2d45fd648541b8779f763ff9925a4
 Zoom.Zoom|https://st1.zoom.us/homepage/20261121-1900/primary/favicon.ico|58b6fee1a883d9b798dea9dbf8f262fb8875e035bfa571792b8967c4c0434d26
+Arcthesia.ArcCreate|https://raw.githubusercontent.com/Arcthesia/ArcCreate/a00f94ca602b990bc15d7ca530434da9f875d152/Assets/Textures/Logos/LogoDesktop.png|4d8f97c327b8c27b6accce9aaa45aa7ae6f7cf2b9db60414fef900c16b2f7655
+Artsoft.RocksNDiamonds|https://www.artsoft.org/favicon.ico|271e227f7748a01bbb3009f43c71c7b9e5dbda50e76a72d20527bb42f6688881
+BZFlag.BZFlag|https://www.bzflag.org/favicon.ico|a8addb71a8ccc5e4ba260a1c45211660d9a742d0ab6fad8bcb9607f614c0232e
+Codectory.AutoActions|https://raw.githubusercontent.com/Codectory/AutoActions/554b280ebdb7e73f4aef404010b5bf5f7d0626e0/Photoshop/Logo_256.png|b6854a243fd9727feed15dc927c5d6f07770da5284b7bd4d57c0fb741e97a6d2
+CongusBongus.CDogsSDL|https://raw.githubusercontent.com/cxong/cdogs-sdl/04a830fe0c53747f9d682f8d880b9a1f38d51422/build/linux/cdogs-icon.128.png|d72de961046a818b665c7d9554b32e64b1c9d4138d848f02d7bccc4d22ed9532
+DCSS.DungeonCrawlStoneSoup|https://raw.githubusercontent.com/crawl/crawl/ac03b36ab445014b136b85ed799a8e4b5065f6e8/crawl-ref/source/dat/tiles/stone_soup_icon-48x48.png|486da51db277817f6fa59c32b131fa4d50cace7d8c9a84995d22f13a92e384e1

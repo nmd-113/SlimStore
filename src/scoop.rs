@@ -31,6 +31,10 @@ pub struct Entry {
 }
 
 impl Entry {
+    pub fn catalog_key(self) -> (&'static str, &'static str) {
+        (self.bucket, self.name)
+    }
+
     #[cfg(test)]
     pub fn qualified(self) -> String {
         format!("{}/{}", self.bucket, self.name)

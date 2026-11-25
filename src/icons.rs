@@ -1,20 +1,25 @@
 use crate::{
     Artwork, MainWindow, http,
+    icon_cache::{IconCache, Key, PublicMetadata},
+    icon_discovery::PackageArtwork,
     platform::wide,
     scoop::{self, Scoop},
+    scoop_catalog,
+    storage::Storage,
 };
-use slint::{ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, VecModel};
+use slint::{
+    ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, VecModel,
+};
 use std::{
     cell::RefCell,
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     io::Cursor,
     path::Path,
     ptr::null_mut,
     rc::Rc,
     sync::{
-        Arc, Mutex, OnceLock,
+        Arc, Condvar, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -26,7 +31,6 @@ use windows_sys::Win32::{
     },
 };
 const MAX_BYTES: usize = 512 * 1024;
-const MAX_DIMENSION: u32 = 256;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 const ICO_SIGNATURE: &[u8] = b"\0\0\x01\0";
 const WINGET_ICONS: &str = include_str!("../catalog/online-icons.txt");
@@ -49,6 +53,17 @@ struct IconIndex {
 struct IconSet {
     id: &'static str,
     assets: Vec<Asset>,
+}
+
+impl IconSet {
+    fn cache_key(&self) -> Option<Key> {
+        let mut identity = format!("pinned:{}", self.id);
+        for asset in &self.assets {
+            identity.push(':');
+            identity.push_str(asset.digest);
+        }
+        http::sha256(identity.as_bytes())
+    }
 }
 
 impl IconIndex {
@@ -146,8 +161,13 @@ fn download(session: &http::Session, asset: &Asset, active: impl Fn() -> bool) -
 fn decode(bytes: &[u8], format: image::ImageFormat) -> Option<image::DynamicImage> {
     let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
-    limits.max_image_width = Some(MAX_DIMENSION);
-    limits.max_image_height = Some(MAX_DIMENSION);
+    let side = if format == image::ImageFormat::Png {
+        512
+    } else {
+        256
+    };
+    limits.max_image_width = Some(side);
+    limits.max_image_height = Some(side);
     limits.max_alloc = Some(4 * 1024 * 1024);
     reader.limits(limits);
     reader.decode().ok()
@@ -187,6 +207,10 @@ fn alternate_ico_frame(bytes: &[u8]) -> Option<image::DynamicImage> {
 }
 
 pub(crate) fn pixels(bytes: &[u8]) -> Option<image::RgbaImage> {
+    thumbnail(bytes, 128)
+}
+
+fn thumbnail(bytes: &[u8], side: u32) -> Option<image::RgbaImage> {
     let icon = if bytes.starts_with(PNG_SIGNATURE) {
         decode(bytes, image::ImageFormat::Png)
     } else if bytes.starts_with(ICO_SIGNATURE) {
@@ -195,7 +219,7 @@ pub(crate) fn pixels(bytes: &[u8]) -> Option<image::RgbaImage> {
     } else {
         None
     }?;
-    Some(icon.thumbnail(128, 128).into_rgba8())
+    Some(icon.thumbnail(side, side).into_rgba8())
 }
 
 fn local_pixels(path: &Path) -> Option<image::RgbaImage> {
@@ -280,6 +304,8 @@ const DYNAMIC_PIXELS: u32 = 64;
 #[derive(Clone)]
 struct Slot {
     request: crate::icon_discovery::Request,
+    pinned: Option<usize>,
+    needs_description: bool,
     used: u64,
     ticket: u64,
 }
@@ -287,27 +313,84 @@ struct Slot {
 #[derive(Default)]
 struct Slots {
     epoch: u64,
+    scope: Option<(i32, String)>,
     next_ticket: u64,
     pinned: HashMap<usize, crate::icon_discovery::Request>,
     dynamic: Vec<Option<Slot>>,
     pending: HashSet<usize>,
     failures: HashMap<usize, (Instant, bool)>,
+    description_attempts: HashMap<usize, Instant>,
 }
 
 pub struct Loader {
     pub enabled: Arc<AtomicBool>,
+    cache: Arc<IconCache>,
     slots: Rc<RefCell<Slots>>,
     online: Rc<VecModel<Image>>,
     local: Rc<VecModel<Image>>,
+    descriptions: Rc<VecModel<SharedString>>,
+    queue: Arc<WorkQueue>,
     tickets: Arc<Vec<AtomicU64>>,
 }
 
 impl Loader {
-    pub fn begin_view(&self) {
-        self.slots.borrow_mut().epoch += 1;
+    pub fn set_disk_cache(&self, enabled: bool) {
+        if self.cache.set_enabled(enabled) {
+            let mut slots = self.slots.borrow_mut();
+            slots.failures.clear();
+            slots.description_attempts.clear();
+        }
     }
 
-    pub fn slot(&self, package: &crate::packages::Package) -> i32 {
+    fn metadata_key(&self, package: &crate::packages::Package) -> Option<Key> {
+        if !self.cache.enabled()
+            || !(package.manageable()
+                || package
+                    .scoop_catalog
+                    .as_ref()
+                    .is_some_and(|row| scoop_catalog::official(&row.bucket).is_some()))
+            || !crate::winget::can_pin_version(&package.version)
+        {
+            return None;
+        }
+        crate::icon_discovery::Request::from_package(package)?.cache_key()
+    }
+
+    pub fn cached_metadata(&self, package: &crate::packages::Package) -> Option<PublicMetadata> {
+        self.cache.get_metadata(&self.metadata_key(package)?)
+    }
+
+    pub fn remember_metadata(
+        &self,
+        package: &crate::packages::Package,
+        value: impl FnOnce() -> PublicMetadata,
+    ) {
+        if let Some(key) = self.metadata_key(package) {
+            self.cache.record_metadata(key, value(), true);
+        }
+    }
+
+    pub fn finish(&self) {
+        self.enabled.store(false, Ordering::Release);
+        self.queue.close();
+        self.cache.finish();
+    }
+
+    pub fn begin_view(&self, page: i32, heading: &str) {
+        let mut slots = self.slots.borrow_mut();
+        slots.epoch += 1;
+        if slots
+            .scope
+            .as_ref()
+            .is_none_or(|(old_page, old_heading)| *old_page != page || old_heading != heading)
+        {
+            slots.scope = Some((page, heading.to_owned()));
+            self.queue.reset();
+            slots.pending.clear();
+        }
+    }
+
+    pub fn slot(&self, package: &crate::packages::Package, needs_description: bool) -> i32 {
         let Some(request) = crate::icon_discovery::Request::from_package(package) else {
             return 0;
         };
@@ -318,7 +401,7 @@ impl Loader {
             .unwrap_or(&package.id);
         let pinned = slot_for(canonical);
         let mut slots = self.slots.borrow_mut();
-        if pinned > 0 {
+        if pinned > 0 && !needs_description {
             // Prefer WinGet metadata for the pinned icon's dynamic fallback.
             let known = slots
                 .pinned
@@ -333,7 +416,9 @@ impl Loader {
         if let Some((position, slot)) =
             slots.dynamic.iter_mut().enumerate().find_map(|(i, slot)| {
                 slot.as_mut()
-                    .filter(|slot| slot.request == request)
+                    .filter(|slot| {
+                        slot.request == request && slot.needs_description == needs_description
+                    })
                     .map(|slot| (i, slot))
             })
         {
@@ -359,16 +444,34 @@ impl Loader {
         let ticket = slots.next_ticket;
         slots.dynamic[victim] = Some(Slot {
             request,
+            pinned: (pinned > 0).then_some(pinned as usize),
+            needs_description,
             used: epoch,
             ticket,
         });
         self.tickets[index].store(ticket, Ordering::Release);
         slots.pending.remove(&index);
         slots.failures.remove(&index);
+        slots.description_attempts.remove(&index);
         drop(slots);
         self.online.set_row_data(index, Image::default());
         self.local.set_row_data(index, Image::default());
+        self.descriptions
+            .set_row_data(index, SharedString::default());
         index as i32
+    }
+
+    pub fn remember_description(&self, slot: i32, text: &str) {
+        let Ok(row) = usize::try_from(slot) else {
+            return;
+        };
+        if row <= index().sets.len() {
+            return;
+        }
+        let text = crate::metadata::card_description(text);
+        if !text.is_empty() {
+            self.descriptions.set_row_data(row, text.into());
+        }
     }
 }
 
@@ -382,28 +485,146 @@ pub fn known_publisher_host(host: &str) -> bool {
         })
 }
 
-struct Work {
+#[derive(Clone, Copy)]
+struct WorkId {
     index: usize,
     ticket: u64,
-    request: Option<crate::icon_discovery::Request>,
+    view: u64,
 }
 
-pub fn attach(ui: &MainWindow, initial: bool, scoop: Option<Scoop>) -> Loader {
+struct Work {
+    id: WorkId,
+    pinned: Option<usize>,
+    request: Option<crate::icon_discovery::Request>,
+    icon: bool,
+    description: bool,
+    // A completed lookup can also tell the icon worker that no manifest was found.
+    metadata: Option<Option<PackageArtwork>>,
+}
+
+impl WorkId {
+    fn current(self, queue: &WorkQueue, tickets: &[AtomicU64]) -> bool {
+        queue.view.load(Ordering::Acquire) == self.view
+            && tickets[self.index].load(Ordering::Acquire) == self.ticket
+    }
+
+    fn post(
+        self,
+        ui: &slint::Weak<MainWindow>,
+        queue: &Arc<WorkQueue>,
+        tickets: &Arc<Vec<AtomicU64>>,
+        apply: impl FnOnce(&MainWindow, i32) + Send + 'static,
+    ) -> bool {
+        let queue = queue.clone();
+        let tickets = tickets.clone();
+        ui.upgrade_in_event_loop(move |ui| {
+            if self.current(&queue, &tickets) {
+                apply(&ui, self.index as i32);
+            }
+        })
+        .is_ok()
+    }
+}
+
+const MAX_PENDING: usize = 64;
+
+#[derive(Default)]
+struct WorkQueue {
+    pending: Mutex<Option<VecDeque<Work>>>,
+    available: Condvar,
+    view: AtomicU64,
+}
+
+impl WorkQueue {
+    fn new() -> Self {
+        Self {
+            pending: Mutex::new(Some(VecDeque::new())),
+            ..Self::default()
+        }
+    }
+
+    fn enqueue(&self, work: Work) -> Option<Work> {
+        let mut guard = self.pending.lock().unwrap();
+        let pending = guard.as_mut()?;
+        let dropped = if pending.len() == MAX_PENDING {
+            pending.pop_front()
+        } else {
+            None
+        };
+        pending.push_back(work);
+        self.available.notify_one();
+        dropped
+    }
+
+    fn next(&self) -> Option<Work> {
+        let guard = self.pending.lock().unwrap();
+        let mut guard = self
+            .available
+            .wait_while(guard, |queue| {
+                queue.as_ref().is_some_and(VecDeque::is_empty)
+            })
+            .unwrap();
+        let pending = guard.as_mut()?;
+        // Give the oldest pending description a turn before probing for more icons.
+        if let Some(index) = pending.iter().position(|work| work.description) {
+            pending.remove(index)
+        } else {
+            pending.pop_back()
+        }
+    }
+
+    fn defer_icon(&self, work: Work, tickets: &[AtomicU64]) -> bool {
+        let mut guard = self.pending.lock().unwrap();
+        let Some(pending) = guard.as_mut() else {
+            return false;
+        };
+        if !work.id.current(self, tickets) || pending.len() == MAX_PENDING {
+            return false;
+        }
+        // New icon-only requests from the current viewport still get priority.
+        pending.push_front(work);
+        self.available.notify_one();
+        true
+    }
+
+    fn reset(&self) {
+        self.view.fetch_add(1, Ordering::Release);
+        if let Some(pending) = self.pending.lock().unwrap().as_mut() {
+            pending.clear();
+        }
+    }
+
+    fn close(&self) {
+        self.view.fetch_add(1, Ordering::Release);
+        self.pending.lock().unwrap().take();
+        self.available.notify_all();
+    }
+}
+
+pub fn attach(
+    ui: &MainWindow,
+    initial: bool,
+    scoop: Option<Scoop>,
+    storage: Storage,
+    cache_enabled: bool,
+) -> Loader {
     let enabled = Arc::new(AtomicBool::new(initial));
+    let cache = Arc::new(IconCache::new(storage, cache_enabled));
     let artwork = ui.global::<Artwork>();
     let pinned = index().sets.len();
     let count = pinned + DYNAMIC_SLOTS + 1;
     let online_model = Rc::new(VecModel::from(vec![Image::default(); count]));
     let local_model = Rc::new(VecModel::from(vec![Image::default(); count]));
+    let descriptions = Rc::new(VecModel::from(vec![SharedString::default(); count]));
     artwork.set_online_icons(ModelRc::from(online_model.clone()));
     artwork.set_local_icons(ModelRc::from(local_model.clone()));
+    artwork.set_descriptions(ModelRc::from(descriptions.clone()));
     let slots = Rc::new(RefCell::new(Slots {
         dynamic: vec![None; DYNAMIC_SLOTS],
         ..Default::default()
     }));
     let tickets = Arc::new((0..count).map(|_| AtomicU64::new(0)).collect::<Vec<_>>());
-    let (send, receive) = mpsc::sync_channel::<Work>(64);
-    let receive = Arc::new(Mutex::new(receive));
+    let queue = Arc::new(WorkQueue::new());
     let have_scoop = Arc::new(AtomicBool::new(scoop.is_some()));
     artwork.set_local_enabled(scoop.is_some());
     artwork.on_scoop_changed({
@@ -418,21 +639,90 @@ pub fn attach(ui: &MainWindow, initial: bool, scoop: Option<Scoop>) -> Loader {
     for _ in 0..2 {
         let ui = ui.as_weak();
         let enabled = enabled.clone();
-        let receive = receive.clone();
+        let queue = queue.clone();
         let tickets = tickets.clone();
         let have_scoop = have_scoop.clone();
+        let cache = cache.clone();
         let mut scoop = scoop.clone();
         std::thread::spawn(move || {
             let mut http = None;
             loop {
-                let Ok(work) = receive.lock().unwrap_or_else(|e| e.into_inner()).recv() else {
+                let Some(mut work) = queue.next() else {
                     return;
                 };
-                let current = || tickets[work.index].load(Ordering::Acquire) == work.ticket;
+                let id = work.id;
+                let current = || id.current(&queue, &tickets);
                 if !current() {
                     continue;
                 }
-                let set = index().sets.get(work.index - 1);
+                let online = enabled.load(Ordering::Relaxed);
+                let active = || current() && enabled.load(Ordering::Relaxed);
+                if active() && http.is_none() {
+                    http = http::session();
+                }
+                let exact_key = cache
+                    .enabled()
+                    .then(|| work.request.as_ref()?.cache_key())
+                    .flatten();
+                let fetch_metadata = || {
+                    let data =
+                        PackageArtwork::fetch(http.as_ref()?, work.request.as_ref()?, active)?;
+                    if active()
+                        && let Some(key) = exact_key
+                        && let Some(public) = data.public_metadata()
+                    {
+                        cache.record_metadata(key, public, false);
+                    }
+                    Some(data)
+                };
+                if work.description {
+                    let cached = exact_key
+                        .as_ref()
+                        .and_then(|key| cache.get_metadata(key))
+                        .filter(|data| !data.description.is_empty());
+                    let tried = cached.is_none() && active();
+                    let metadata = tried.then(fetch_metadata);
+                    let text = cached
+                        .as_ref()
+                        .map(|data| data.description.as_str())
+                        .or_else(|| {
+                            metadata
+                                .as_ref()
+                                .and_then(Option::as_ref)
+                                .and_then(PackageArtwork::description)
+                        })
+                        .map_or_else(String::new, crate::metadata::card_description);
+                    let done = !work.icon;
+                    if !id.post(&ui, &queue, &tickets, move |ui, slot| {
+                        ui.global::<Artwork>().invoke_description_result(
+                            slot,
+                            text.into(),
+                            tried,
+                            done,
+                        );
+                    }) {
+                        return;
+                    }
+                    if !done {
+                        work.description = false;
+                        work.metadata = metadata;
+                        if !queue.defer_icon(work, &tickets)
+                            && !id.post(&ui, &queue, &tickets, move |ui, slot| {
+                                ui.global::<Artwork>().invoke_icon_result(
+                                    slot,
+                                    Image::default(),
+                                    false,
+                                    online,
+                                    false,
+                                );
+                            })
+                        {
+                            return;
+                        }
+                    }
+                    continue;
+                }
+                let set = work.pinned.and_then(|slot| index().sets.get(slot - 1));
                 if have_scoop.load(Ordering::Relaxed) != scoop.is_some() {
                     scoop = Scoop::detect();
                 }
@@ -448,68 +738,67 @@ pub fn attach(ui: &MainWindow, initial: bool, scoop: Option<Scoop>) -> Loader {
                     })
                     .and_then(|path| local_pixels(&path));
                 let from_local = local.is_some();
-                let online = enabled.load(Ordering::Relaxed);
-                let active = || current() && enabled.load(Ordering::Relaxed);
-                let icon = if from_local {
-                    local
-                } else if active() {
-                    if http.is_none() {
-                        http = http::session();
-                    }
-                    http.as_ref().and_then(|session| {
-                        set.and_then(|set| {
+                let icon = local.or_else(|| {
+                    let pinned_key = cache.enabled().then(|| set?.cache_key()).flatten();
+                    let cached = [pinned_key, exact_key]
+                        .iter()
+                        .flatten()
+                        .find_map(|key| cache.get(key));
+                    cached.or_else(|| {
+                        if !active() {
+                            return None;
+                        }
+                        let session = http.as_ref()?;
+                        let pinned = set.and_then(|set| {
                             set.assets
                                 .iter()
                                 .find_map(|asset| pixels(&download(session, asset, active)?))
-                        })
-                        .or_else(|| {
-                            crate::icon_discovery::load(
+                        });
+                        let (image, key) = if let Some(image) = pinned {
+                            (image, pinned_key)
+                        } else {
+                            let metadata = work.metadata.unwrap_or_else(fetch_metadata)?;
+                            let start = Instant::now();
+                            let active = || active() && start.elapsed() < Duration::from_secs(6);
+                            let image = crate::icon_discovery::load(
                                 session,
                                 work.request.as_ref()?,
+                                &metadata,
                                 MAX_BYTES,
                                 active,
-                                |bytes| {
-                                    let icon = pixels(bytes)?;
-                                    Some(image::imageops::thumbnail(
-                                        &icon,
-                                        DYNAMIC_PIXELS,
-                                        DYNAMIC_PIXELS,
-                                    ))
-                                },
-                            )
-                        })
-                    })
-                } else {
-                    None
-                };
-                let tickets = tickets.clone();
-                if ui
-                    .upgrade_in_event_loop(move |ui| {
-                        if tickets[work.index].load(Ordering::Acquire) != work.ticket {
-                            return;
+                                |bytes| thumbnail(bytes, DYNAMIC_PIXELS),
+                            )?;
+                            (image, exact_key)
+                        };
+                        if current()
+                            && let Some(key) = key
+                        {
+                            cache.record(key, &image);
                         }
-                        let img = icon.map_or_else(Image::default, |icon| {
-                            Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
-                                icon.as_raw(),
-                                icon.width(),
-                                icon.height(),
-                            ))
-                        });
-                        ui.global::<Artwork>().invoke_icon_result(
-                            work.index as i32,
-                            img,
-                            from_local,
-                            online,
-                        );
+                        Some(image)
                     })
-                    .is_err()
-                {
+                });
+                if !id.post(&ui, &queue, &tickets, move |ui, slot| {
+                    let img = icon.map_or_else(Image::default, |icon| {
+                        Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(
+                            icon.as_raw(),
+                            icon.width(),
+                            icon.height(),
+                        ))
+                    });
+                    ui.global::<Artwork>()
+                        .invoke_icon_result(slot, img, from_local, online, true);
+                }) {
                     return;
                 }
             }
         });
     }
     artwork.on_request_icon({
+        let cache = cache.clone();
+        let queue = queue.clone();
+        let tickets = tickets.clone();
+        let descriptions = descriptions.clone();
         let (enabled, slots, online_model, local_model) = (
             enabled.clone(),
             slots.clone(),
@@ -530,39 +819,89 @@ pub fn attach(ui: &MainWindow, initial: bool, scoop: Option<Scoop>) -> Loader {
                     .row_data(index)
                     .is_some_and(|image| image.size().width == 0)
             };
-            if !(blank(&local_model)
-                && (online && blank(&online_model)
-                    || !online && have_scoop.load(Ordering::Relaxed)))
-            {
+            let needs_art = if online || cache.enabled() {
+                blank(&online_model)
+            } else {
+                have_scoop.load(Ordering::Relaxed)
+            };
+            if slots.pending.contains(&index) {
                 return;
             }
-            if slots
-                .failures
-                .get(&index)
-                .is_some_and(|(time, tried_online)| {
-                    time.elapsed() < RETRY_DELAY && (!online || *tried_online)
-                })
-                || slots.pending.contains(&index)
-            {
-                return;
-            }
-            let (ticket, request) = if index <= pinned {
-                (0, slots.pinned.get(&index).cloned())
+            let icon = blank(&local_model)
+                && needs_art
+                && !slots
+                    .failures
+                    .get(&index)
+                    .is_some_and(|(time, tried_online)| {
+                        time.elapsed() < RETRY_DELAY && (!online || *tried_online)
+                    });
+            let (ticket, request, asset_slot, needs_description) = if index <= pinned {
+                (0, slots.pinned.get(&index).cloned(), Some(index), false)
             } else {
                 let Some(slot) = &slots.dynamic[index - pinned - 1] else {
                     return;
                 };
-                (slot.ticket, Some(slot.request.clone()))
+                (
+                    slot.ticket,
+                    Some(slot.request.clone()),
+                    slot.pinned,
+                    slot.needs_description,
+                )
             };
-            if send
-                .try_send(Work {
-                    index,
-                    ticket,
+            let description = (online || cache.enabled())
+                && needs_description
+                && descriptions
+                    .row_data(index)
+                    .is_some_and(|text| text.is_empty())
+                && slots
+                    .description_attempts
+                    .get(&index)
+                    .is_none_or(|time| time.elapsed() >= RETRY_DELAY);
+            if icon || description {
+                let dropped = queue.enqueue(Work {
+                    id: WorkId {
+                        index,
+                        ticket,
+                        view: queue.view.load(Ordering::Acquire),
+                    },
                     request,
-                })
-                .is_ok()
-            {
+                    icon,
+                    description,
+                    pinned: asset_slot,
+                    metadata: None,
+                });
+                if let Some(dropped) = dropped
+                    && dropped.id.current(&queue, &tickets)
+                {
+                    slots.pending.remove(&dropped.id.index);
+                }
                 slots.pending.insert(index);
+            }
+        }
+    });
+    artwork.on_description_result({
+        let descriptions = descriptions.clone();
+        let enabled = enabled.clone();
+        let cache = cache.clone();
+        let slots = slots.clone();
+        move |slot, text, tried, done| {
+            let row = slot as usize;
+            let online = enabled.load(Ordering::Relaxed);
+            let mut slots = slots.borrow_mut();
+            if done {
+                slots.pending.remove(&row);
+            }
+            if tried && online {
+                slots.description_attempts.insert(row, Instant::now());
+            }
+            drop(slots);
+            if (online || cache.enabled())
+                && !text.is_empty()
+                && descriptions
+                    .row_data(row)
+                    .is_some_and(|text| text.is_empty())
+            {
+                descriptions.set_row_data(row, text);
             }
         }
     });
@@ -573,31 +912,36 @@ pub fn attach(ui: &MainWindow, initial: bool, scoop: Option<Scoop>) -> Loader {
             local_model.clone(),
             enabled.clone(),
         );
-        move |slot, image, from_local, online| {
+        move |slot, image, from_local, online, tried_icon| {
             let index = slot as usize;
             let mut slots = slots.borrow_mut();
             slots.pending.remove(&index);
-            if image.size().width > 0 {
+            if tried_icon && image.size().width > 0 {
                 slots.failures.remove(&index);
-                drop(slots);
-                if from_local {
-                    local_model.set_row_data(index, image);
-                } else {
-                    online_model.set_row_data(index, image);
-                }
-            } else {
+            } else if tried_icon {
                 slots.failures.insert(
                     index,
                     (Instant::now(), online && enabled.load(Ordering::Relaxed)),
                 );
             }
+            drop(slots);
+            if image.size().width > 0 {
+                if from_local {
+                    local_model.set_row_data(index, image);
+                } else {
+                    online_model.set_row_data(index, image);
+                }
+            }
         }
     });
     Loader {
         enabled,
+        cache,
         slots,
         online: online_model,
         local: local_model,
+        descriptions,
+        queue,
         tickets,
     }
 }
@@ -606,6 +950,60 @@ pub fn attach(ui: &MainWindow, initial: bool, scoop: Option<Scoop>) -> Loader {
 mod tests {
     use super::*;
 
+    fn work(index: usize, description: bool) -> Work {
+        Work {
+            id: WorkId {
+                index,
+                ticket: 0,
+                view: 0,
+            },
+            pinned: None,
+            request: None,
+            icon: true,
+            description,
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn icon_queue_stays_bounded_and_discards_old_views() {
+        let queue = WorkQueue::new();
+        for index in 0..=MAX_PENDING {
+            let discarded = queue.enqueue(work(index, false));
+            assert_eq!(
+                discarded.map(|work| work.id.index),
+                (index == MAX_PENDING).then_some(0)
+            );
+        }
+        assert_eq!(queue.next().unwrap().id.index, MAX_PENDING);
+        queue.reset();
+        assert_eq!(queue.view.load(Ordering::Acquire), 1);
+        assert!(queue.pending.lock().unwrap().as_ref().unwrap().is_empty());
+        queue.close();
+        assert!(queue.next().is_none());
+    }
+
+    #[test]
+    fn descriptions_run_in_order_ahead_of_icon_probes() {
+        let queue = WorkQueue::new();
+        let tickets = [const { AtomicU64::new(0) }; 4];
+        queue.enqueue(work(0, false));
+        queue.enqueue(work(1, true));
+        queue.enqueue(work(2, true));
+        let mut first = queue.next().unwrap();
+        assert_eq!(first.id.index, 1);
+        first.description = false;
+        first.metadata = Some(None);
+        assert!(queue.defer_icon(first, &tickets));
+        queue.enqueue(work(3, false));
+        assert_eq!(queue.next().unwrap().id.index, 2);
+        assert_eq!(queue.next().unwrap().id.index, 3);
+        assert_eq!(queue.next().unwrap().id.index, 0);
+        assert!(matches!(queue.next().unwrap().metadata, Some(None)));
+        queue.reset();
+        assert!(!queue.defer_icon(work(1, false), &tickets));
+    }
+
     #[test]
     fn artwork_is_keyed_by_exact_package_and_checksum() {
         for manifest in [WINGET_ICONS, PUBLISHER_ICONS, UNIGET_ICONS] {
@@ -613,7 +1011,7 @@ mod tests {
             for line in manifest_entries(manifest) {
                 let (id, rest) = line.split_once('|').unwrap();
                 assert!(names.insert(id.to_ascii_lowercase()));
-                assert!(crate::metadata::catalog().iter().any(|app| app.id == id));
+                assert!(crate::packages::valid_id(id));
                 assert_ne!(slot_for(id), 0);
                 if manifest == PUBLISHER_ICONS {
                     assert!(remote_asset(rest).is_some());

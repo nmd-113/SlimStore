@@ -2,7 +2,12 @@
 use crate::app::INSTALL_QUEUE_PAGE;
 use crate::{ActivityItem, Artwork, MainWindow, errors::describe_exit};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use std::{cell::Cell, io::Write, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    io::Write,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 fn report(message: &str) {
     if let Some(path) = std::env::var_os("SLIMSTORE_SMOKE_REPORT")
@@ -24,17 +29,20 @@ pub fn install(ui: &MainWindow) -> slint::Timer {
     let weak = ui.as_weak();
     let phase = Rc::new(Cell::new(0));
     let ticks = Rc::new(Cell::new(0));
+    let overview_started = Cell::new(None::<Instant>);
+    let overview_published = Cell::new(false);
+    let interval = if mode == "search-overview" { 100 } else { 500 };
     report(&format!("START {mode}"));
     timer.start(
         slint::TimerMode::Repeated,
-        Duration::from_millis(500),
+        Duration::from_millis(interval),
         move || {
             let Some(ui) = weak.upgrade() else {
                 return;
             };
             ticks.set(ticks.get() + 1);
             let result = (|| -> Result<bool, String> {
-                if ticks.get() > 180 {
+                if ticks.get() * interval > 90_000 {
                     return Err(format!(
                         "Timeout in phase {}: {}",
                         phase.get(),
@@ -297,6 +305,246 @@ pub fn install(ui: &MainWindow) -> slint::Timer {
                     }
                     report("PASS responsive 820x600 and list layout at requested display scale");
                     return Ok(true);
+                }
+                if mode == "search-screenshots" {
+                    let packages = [("amir1376.ABDownloadManager", "winget"), ("extras/altsnap", "scoop")];
+                    let Some(&(id, source)) = packages.get((phase.get() / 4) as usize) else {
+                        return Ok(true);
+                    };
+                    if ui.get_busy() { return Ok(false); }
+                    match phase.get() % 4 {
+                        0 => {
+                            ui.set_query(id.into());
+                            ui.invoke_search(id.into());
+                        }
+                        1 => {
+                            if ui.get_page() != 8 || !ui.get_rows().iter().any(|r| {
+                                [r.first, r.second, r.third].iter().any(|p| p.id == id && p.source == source)
+                            }) { return Ok(false); }
+                            ui.invoke_open_app(id.into());
+                        }
+                        2 => {
+                            if ui.get_page() != 7 || ui.get_detail().id != id
+                                || !ui.get_screenshots_available() || ui.get_gallery().row_count() != 0
+                            {
+                                return Err(format!("{id} did not offer an empty on-demand gallery in Details"));
+                            }
+                            ui.invoke_action("load-screenshots".into());
+                        }
+                        _ => {
+                            let gallery = ui.get_gallery();
+                            if !(1..=2).contains(&gallery.row_count()) || gallery.iter().any(|shot| {
+                                shot.preview.size().width == 0 || shot.credit.is_empty()
+                            }) {
+                                return Err(format!("{id} did not load verified project screenshots"));
+                            }
+                            ui.set_preview_index(1);
+                            if !ui.get_modal_open() { return Err("Screenshot preview did not activate the modal overlay".into()); }
+                            ui.set_preview_index(0);
+                            ui.invoke_back();
+                            if ui.get_page() != 8 || ui.get_gallery().row_count() != 0 {
+                                return Err("Leaving Details did not clear the online gallery".into());
+                            }
+                            report(&format!("PASS {source} search for {id}, on-demand screenshots, preview, and cleanup on Back"));
+                        }
+                    }
+                    phase.set(phase.get() + 1);
+                    return Ok(false);
+                }
+                if mode == "game-artwork" {
+                    match phase.get() {
+                        0 if ui.get_busy() => return Ok(false),
+                        0 => {
+                            ui.window().set_size(slint::LogicalSize::new(1280., 900.));
+                            ui.set_query("game".into());
+                            ui.invoke_search("game".into());
+                        }
+                        1 if ui.get_busy() || ui.get_page() != 8 => return Ok(false),
+                        1 => {
+                            if ui.get_result_count() < 60 {
+                                return Err(format!("Broad game search returned {} results", ui.get_result_count()));
+                            }
+                            report(&format!("PASS game search returned {} results", ui.get_result_count()));
+                        }
+                        _ => {
+                            let artwork = ui.global::<Artwork>();
+                            let icons = artwork.get_online_icons();
+                            let cards: Vec<_> = ui.get_rows().iter().take(4)
+                                .flat_map(|row| [row.first, row.second, row.third])
+                                .collect();
+                            let slot_for = |id| cards.iter().find(|pkg| pkg.id == id && pkg.icon_slot > 0)
+                                .map(|pkg| pkg.icon_slot as usize);
+                            let has_icon = |id| slot_for(id).and_then(|slot| icons.row_data(slot))
+                                .is_some_and(|icon| icon.size().width > 0);
+                            let examples = ["Arcthesia.ArcCreate", "Artsoft.RocksNDiamonds", "BZFlag.BZFlag", "agateau.PixelWheels"];
+                            let loaded: Vec<_> = examples.into_iter().filter(|id| has_icon(*id)).collect();
+                            let pixel_description = slot_for("agateau.PixelWheels")
+                                .and_then(|slot| artwork.get_descriptions().row_data(slot));
+                            if loaded.len() < 3 || !loaded.contains(&"agateau.PixelWheels")
+                                || pixel_description.is_none_or(|text| text.is_empty()) {
+                                return Ok(false);
+                            }
+                            report("PASS Pixel Wheels search card received its exact WinGet description");
+                            report(&format!("PASS non-curated game icons: {}", loaded.join(", ")));
+                            return Ok(true);
+                        }
+                    }
+                    phase.set(phase.get() + 1);
+                    return Ok(false);
+                }
+                if mode == "search-overview" {
+                    let id = "StreetPea.chiaki-ng";
+                    match phase.get() {
+                        0 => {
+                            if ui.get_busy() { return Ok(false); }
+                            ui.set_query(id.into());
+                            ui.invoke_search(id.into());
+                        }
+                        1 => {
+                            if ui.get_busy() || ui.get_page() != 8 { return Ok(false); }
+                            if !ui.get_subtitle().contains("WinGet results") || ui.get_result_count() == 0 {
+                                return Err(format!("Live search for {id} failed: {}", ui.get_subtitle()));
+                            }
+                            overview_started.set(Some(Instant::now()));
+                            ui.invoke_open_app(id.into());
+                        }
+                        _ => {
+                            let detail = ui.get_detail();
+                            if ui.get_busy() {
+                                if !overview_published.get() && !detail.website.is_empty() {
+                                    if ui.get_detail_ready() || ui.get_detail_actionable() {
+                                        return Err("Overview exposed package actions while checking inventory".into());
+                                    }
+                                    overview_published.set(true);
+                                    let elapsed = overview_started.get().unwrap().elapsed().as_millis();
+                                    report(&format!("PASS overview metadata visible after {elapsed} ms while inventory was checking"));
+                                }
+                                return Ok(false);
+                            }
+                            let output = ui.get_detail_text();
+                            let description = crate::winget::show_description(output.as_str())
+                                .ok_or_else(|| format!("WinGet did not return a recognized description for {id}"))?;
+                            if ui.get_page() != 7 || detail.id != id || ui.get_details_expanded()
+                                || detail.publisher_description.as_str() != description
+                            {
+                                return Err(format!("{id} did not show its live description in Overview"));
+                            }
+                            let links = crate::winget::show_links(output.as_str());
+                            if links.website.is_empty() || detail.website.as_str() != links.website
+                                || links.notes.is_empty() || detail.notes.as_str() != links.notes
+                                || links.support.is_empty() || detail.support_site.as_str() != links.support
+                            {
+                                return Err(format!("{id} did not show its live website, release notes, and support links"));
+                            }
+                            if let Some(version) = crate::winget::show_version(output.as_str(), id)
+                                && detail.available_version.as_str() != version {
+                                return Err(format!("{id} did not show its live catalog version {version}"));
+                            }
+                            let elapsed = overview_started.get().unwrap().elapsed().as_millis();
+                            report(&format!("PASS Overview settled after {elapsed} ms"));
+                            report("PASS live website, release notes and support links available in Details");
+                            report(&format!("PASS {id} shows live WinGet description with full output collapsed: {description}"));
+                            ui.invoke_navigate(1);
+                            ui.invoke_open_app("Mozilla.Firefox".into());
+                            if ui.get_page() != 7 || ui.get_detail().id != "Mozilla.Firefox" {
+                                return Err("Could not open a second package for the Back check".into());
+                            }
+                            ui.invoke_back();
+                            ui.invoke_back();
+                            if ui.get_page() != 7 || ui.get_detail().id != id || ui.get_detail().website != detail.website {
+                                return Err("Back showed the wrong package or website in Details".into());
+                            }
+                            report("PASS Back restored the correct previously opened overview immediately");
+                            return Ok(true);
+                        }
+                    }
+                    phase.set(phase.get() + 1);
+                    return Ok(false);
+                }
+                if matches!(mode.as_str(), "search-icons" | "icon-cache-save" | "icon-cache-reuse") {
+                    let cache_mode = mode != "search-icons";
+                    let packages: &[&str] = if cache_mode { &["Tiled.Tiled"] } else { &["Tiled.Tiled", "GnuCash.GnuCash"] };
+                    let index = (phase.get() / 2) as usize;
+                    let Some(&id) = packages.get(index) else {
+                        if cache_mode && phase.get() == 2 {
+                            ui.invoke_open_app(packages[0].into());
+                            if mode == "icon-cache-reuse" {
+                                let detail = ui.get_detail();
+                                if detail.publisher_description.is_empty() || detail.website.is_empty()
+                                    || detail.publisher.is_empty() || detail.license.is_empty()
+                                    || ui.get_detail_ready() || ui.get_detail_actionable()
+                                {
+                                    return Err("Cached overview fields were missing or enabled unverified actions".into());
+                                }
+                                report("PASS cached description, website, publisher, and license appeared before live overview verification");
+                            }
+                            phase.set(3);
+                            return Ok(false);
+                        }
+                        if mode == "icon-cache-save" {
+                            if ui.get_busy() { return Ok(false); }
+                            let detail = ui.get_detail();
+                            if detail.publisher_description.is_empty() || detail.website.is_empty()
+                                || detail.publisher.is_empty() || detail.license.is_empty()
+                            {
+                                return Err("Live overview did not supply the metadata cache test fields".into());
+                            }
+                            ui.set_online_icons(false);
+                            ui.invoke_settings_changed();
+                        } else if mode == "icon-cache-reuse" {
+                            ui.set_icon_cache(false);
+                            ui.invoke_settings_changed();
+                        }
+                        return Ok(true);
+                    };
+                    if phase.get() % 2 == 0 {
+                        if ui.get_busy() { return Ok(false); }
+                        if mode == "icon-cache-save" {
+                            ui.set_persistent(true);
+                            ui.set_icon_cache(true);
+                            ui.invoke_settings_changed();
+                            if !ui.get_icon_cache() { return Err("Failed to opt into icon cache".into()); }
+                        } else if mode == "icon-cache-reuse" && (!ui.get_icon_cache() || ui.get_online_icons()) {
+                            return Err("Cache reuse test requires saved cache and online fetching off".into());
+                        }
+                        if crate::icons::slot_for(id) != 0 {
+                            return Err(format!("{id} is pinned and cannot check dynamic artwork"));
+                        }
+                        ui.set_list_mode(index == 1);
+                        ui.set_query(id.into());
+                        ui.invoke_search(id.into());
+                        phase.set(phase.get() + 1);
+                        return Ok(false);
+                    }
+                    if ui.get_busy() || ui.get_page() != 8 || !ui.get_subtitle().contains("WinGet results") {
+                        return Ok(false);
+                    }
+                    let rows = ui.get_rows();
+                    let slot = rows.iter().find_map(|row| {
+                        [row.first, row.second, row.third].into_iter()
+                            .find(|pkg| pkg.id == id && pkg.source == "winget")
+                            .map(|pkg| pkg.icon_slot)
+                    });
+                    let Some(slot) = slot else { return Ok(false); };
+                    if slot <= 0 {
+                        return Err(format!("{id} did not receive a dynamic icon slot"));
+                    }
+                    let icon = ui.global::<Artwork>().get_online_icons().row_data(slot as usize);
+                    if icon.is_none_or(|image| image.size().width == 0) {
+                        return Ok(false);
+                    }
+                    if cache_mode && ui.global::<Artwork>().get_descriptions()
+                        .row_data(slot as usize).is_none_or(|text| text.is_empty())
+                    {
+                        return Ok(false);
+                    }
+                    if mode == "icon-cache-reuse" {
+                        report(&format!("PASS {id} reused the portable icon and description with online fetching off"));
+                    } else {
+                        report(&format!("PASS {id} loaded an online icon in {} search results", if index == 0 { "grid" } else { "list" }));
+                    }
+                    phase.set(phase.get() + 1);
+                    return Ok(false);
                 }
                 if matches!(mode.as_str(), "scoop-search" | "scoop-no-winget") {
                     match phase.get() {

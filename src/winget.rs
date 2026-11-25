@@ -1,6 +1,5 @@
-//! Compatibility boundary for WinGet's human-readable CLI. Read the column positions
-//! that WinGet prints for each table, and keep `show` metadata verbatim.
-//! Reject ambiguous/truncated IDs. Keep `show` metadata verbatim rather than translating labels.
+//! Parse WinGet's displayed table columns, reject ambiguous or truncated IDs,
+//! and retain the localized `show` output.
 use crate::{
     errors::{AppError, describe_exit},
     metadata::clean_output,
@@ -9,13 +8,14 @@ use crate::{
 use std::{
     collections::VecDeque,
     io::Read,
-    os::windows::process::CommandExt,
+    os::windows::{io::AsRawHandle, process::CommandExt},
     path::PathBuf,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use unicode_width::UnicodeWidthChar;
+use windows_sys::Win32::{Foundation::WAIT_FAILED, System::Threading::WaitForSingleObject};
 
 pub const SOURCE: &str = "winget";
 const SOURCE_URL: &str = "https://cdn.winget.microsoft.com/cache";
@@ -228,9 +228,15 @@ impl Output {
     }
 }
 
+#[derive(Default)]
+struct ProcessOutput {
+    bytes: VecDeque<u8>,
+    received: u64,
+}
+
 fn reader(
     mut pipe: impl Read + Send + 'static,
-    buffer: Arc<Mutex<VecDeque<u8>>>,
+    buffer: Arc<Mutex<ProcessOutput>>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut bytes = [0u8; 8192];
@@ -239,9 +245,10 @@ fn reader(
                 break;
             }
             let mut b = buffer.lock().unwrap_or_else(|e| e.into_inner());
-            let excess = (b.len() + n).saturating_sub(OUTPUT_LIMIT);
-            b.drain(..excess);
-            b.extend(&bytes[..n]);
+            let excess = (b.bytes.len() + n).saturating_sub(OUTPUT_LIMIT);
+            b.bytes.drain(..excess);
+            b.bytes.extend(&bytes[..n]);
+            b.received += n as u64;
         }
     })
 }
@@ -423,12 +430,13 @@ pub(crate) fn run_process(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| AppError(format!("Could not start {name}: {error}.")))?;
-    let stdout = Arc::new(Mutex::new(VecDeque::new()));
-    let stderr = Arc::new(Mutex::new(VecDeque::new()));
+    let stdout = Arc::new(Mutex::new(ProcessOutput::default()));
+    let stderr = Arc::new(Mutex::new(ProcessOutput::default()));
     let a = reader(child.stdout.take().unwrap(), stdout.clone());
     let b = reader(child.stderr.take().unwrap(), stderr.clone());
     let started = Instant::now();
     let mut last_message = Instant::now();
+    let mut last_report = (0, false);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -444,20 +452,31 @@ pub(crate) fn run_process(
             }));
         }
         if change && last_message.elapsed() > Duration::from_millis(700) {
-            let data: Vec<u8> = stdout
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .copied()
-                .collect();
-            let mut text = clean_output(&String::from_utf8_lossy(&data));
-            if started.elapsed() > Duration::from_secs(45 * 60) {
-                text.push_str("\nThis installer is taking longer than 45 minutes. Check any installer or UAC windows. SlimStore will keep waiting to avoid interrupting a system change.");
+            let lengthy = started.elapsed() > Duration::from_secs(45 * 60);
+            let data: Option<Vec<u8>> = {
+                let output = stdout.lock().unwrap_or_else(|e| e.into_inner());
+                let report = (output.received, lengthy);
+                if report == last_report {
+                    None
+                } else {
+                    last_report = report;
+                    Some(output.bytes.iter().copied().collect())
+                }
+            };
+            if let Some(data) = data {
+                let mut text = clean_output(&String::from_utf8_lossy(&data));
+                if lengthy {
+                    text.push_str("\nThis installer is taking longer than 45 minutes. Check any installer or UAC windows. SlimStore will keep waiting to avoid interrupting a system change.");
+                }
+                progress(text);
             }
-            progress(text);
             last_message = Instant::now();
         }
-        std::thread::sleep(Duration::from_millis(80));
+        // The process handle is signaled as soon as the manager exits. The timeout
+        // still bounds how long we wait to check cancellation and update progress.
+        if unsafe { WaitForSingleObject(child.as_raw_handle(), 80) } == WAIT_FAILED {
+            std::thread::sleep(Duration::from_millis(80));
+        }
     };
     // Some installers inherit stdout handles. Bound the wait after a manager exits.
     let until = Instant::now() + Duration::from_secs(2);
@@ -473,12 +492,14 @@ pub(crate) fn run_process(
     let out: Vec<u8> = stdout
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+        .bytes
         .iter()
         .copied()
         .collect();
     let err: Vec<u8> = stderr
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+        .bytes
         .iter()
         .copied()
         .collect();
@@ -491,6 +512,135 @@ pub(crate) fn run_process(
         code: status.code().unwrap_or(-1) as u32,
         text,
     })
+}
+
+fn show_field(line: &str) -> Option<(&str, &str)> {
+    if line.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let (label, value) = line.split_once([':', '：'])?;
+    Some((label.trim_end(), value.trim()))
+}
+
+pub fn show_version<'a>(output: &'a str, id: &str) -> Option<&'a str> {
+    // WinGet prints the exact ID in the heading, followed by the catalog version.
+    // Unrecognized localized output falls back to the catalog table.
+    let mut lines = output.lines().filter(|line| !line.trim().is_empty());
+    lines.find(|line| {
+        !line.starts_with(char::is_whitespace)
+            && line
+                .strip_suffix(']')
+                .and_then(|line| line.rsplit_once('['))
+                .is_some_and(|(_, found)| found.eq_ignore_ascii_case(id))
+    })?;
+    let (label, version) = show_field(lines.next()?)?;
+    (matches!(
+        label,
+        "Version"
+            | "Versiune"
+            | "Versión"
+            | "Versão"
+            | "Versione"
+            | "Versie"
+            | "Wersja"
+            | "Verze"
+            | "Версия"
+            | "バージョン"
+            | "版本"
+            | "버전"
+    ) && can_pin_version(version))
+    .then_some(version)
+}
+
+/// Read a description from a successful `winget show` response for an exact package.
+/// WinGet prints multiline fields with two spaces before every continuation.
+pub fn show_description(output: &str) -> Option<String> {
+    const LABELS: &[&str] = &[
+        "Description",
+        "Beschreibung",
+        "Descriere",
+        "Descripción",
+        "Descrição",
+        "Descrizione",
+        "Beschrijving",
+        "Opis",
+        "Popis",
+        "Leírás",
+        "Beskrivning",
+        "Beskrivelse",
+        "Kuvaus",
+        "Описание",
+        "Опис",
+        "Açıklama",
+        "Περιγραφή",
+        "説明",
+        "描述",
+        "說明",
+        "설명",
+    ];
+    let mut lines = output.lines();
+    while let Some(line) = lines.next() {
+        let Some((label, value)) = show_field(line) else {
+            continue;
+        };
+        if !LABELS.contains(&label) {
+            continue;
+        }
+        let mut description = if value.is_empty() {
+            lines
+                .map_while(|line| line.strip_prefix("  "))
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            value.to_owned()
+        };
+        const MAX_BYTES: usize = 16 * 1024;
+        if description.len() > MAX_BYTES {
+            description.truncate(description.floor_char_boundary(MAX_BYTES));
+            description.push('…');
+        }
+        let description = description.trim();
+        return (!description.is_empty()).then(|| description.to_owned());
+    }
+    None
+}
+
+#[derive(Default)]
+pub struct ShowLinks<'a> {
+    pub publisher: &'a str,
+    pub license: &'a str,
+    pub website: &'a str,
+    pub notes: &'a str,
+    pub support: &'a str,
+    pub publisher_site: &'a str,
+    pub license_site: &'a str,
+}
+
+pub fn show_links(output: &str) -> ShowLinks<'_> {
+    let mut fields = ShowLinks::default();
+    for line in output.lines() {
+        let Some((label, value)) = show_field(line) else {
+            continue;
+        };
+        if value.is_empty() || value.len() > 2048 {
+            continue;
+        }
+        let field = match label {
+            "Publisher" | "Éditeur" | "Herausgeber" | "Editor" => &mut fields.publisher,
+            "License" | "Licence" | "Lizenz" | "Licencia" | "Licență" => &mut fields.license,
+            "Homepage" | "Page d’accueil" | "Page d'accueil" | "Startseite"
+            | "Página principal" => &mut fields.website,
+            "Release Notes Url" => &mut fields.notes,
+            "Publisher Support Url" => &mut fields.support,
+            "Publisher Url" => &mut fields.publisher_site,
+            "License Url" => &mut fields.license_site,
+            _ => continue,
+        };
+        if field.is_empty() {
+            *field = value;
+        }
+    }
+    fields
 }
 
 #[derive(Debug)]
@@ -671,6 +821,84 @@ pub fn source_summary(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn details_links_only_use_recognized_top_level_fields_and_https() {
+        let output = "Publisher: Street Pea\nPublisher Url: https://github.com/streetpea\nPublisher Support Url: https://github.com/chiaki-ng/chiaki-ng/issues\nHomepage: https://example.org/?q=1#help\nLicense: AGPL-3.0 license\nRelease Notes Url: https://github.com/chiaki-ng/chiaki-ng/releases/tag/v1.10.1\nInstaller:\n  License Url: https://example.org/wrong";
+        let fields = show_links(output);
+        assert_eq!(fields.publisher, "Street Pea");
+        assert_eq!(fields.license, "AGPL-3.0 license");
+        assert_eq!(
+            fields.notes,
+            "https://github.com/chiaki-ng/chiaki-ng/releases/tag/v1.10.1"
+        );
+        assert_eq!(
+            fields.support,
+            "https://github.com/chiaki-ng/chiaki-ng/issues"
+        );
+        assert_eq!(fields.license_site, "");
+        assert_eq!(
+            crate::platform::browser_link(fields.website),
+            Some(fields.website)
+        );
+        for bad in [
+            "http://example.org",
+            "file:///C:/example",
+            "https://example.org@other.org/",
+            "https://example.org\\other.org",
+            "https://127.0.0.1/",
+            "https://%65xample.org/",
+            "https://example.org/ bad",
+        ] {
+            assert!(crate::platform::browser_link(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn show_description_reads_inline_and_indented_fields() {
+        assert_eq!(
+            show_description("Version: 1.10.1\nDescription: Open Source PlayStation Remote Play\nHomepage: https://example.org").as_deref(),
+            Some("Open Source PlayStation Remote Play")
+        );
+        assert_eq!(
+            show_description("Descriere:\r\n  Știință și muzică.\r\n  \r\n    Mai multe detalii: aici.\r\nLicență: MIT").as_deref(),
+            Some("Știință și muzică.\n\n  Mai multe detalii: aici.")
+        );
+        assert_eq!(show_description("説明： 日本語").as_deref(), Some("日本語"));
+        assert_eq!(
+            show_description("Description:\nInstaller:\n  Description: unrelated"),
+            None
+        );
+        assert_eq!(
+            show_description("Publisher: Example\nRelease Notes: Description: other"),
+            None
+        );
+        let long = format!("Description: {}", "語".repeat(6000));
+        let bounded = show_description(&long).unwrap();
+        assert!(bounded.ends_with('…') && bounded.len() <= 16 * 1024 + '…'.len_utf8());
+    }
+
+    #[test]
+    fn show_version_requires_the_exact_heading_and_top_level_version() {
+        let id = "Vendor.Example";
+        assert_eq!(
+            show_version("App găsită [vendor.example]\r\nVersiune: 1.2.3\r\n", id),
+            Some("1.2.3")
+        );
+        assert_eq!(
+            show_version("検出 [Vendor.Example]\nバージョン：2.0", id),
+            Some("2.0")
+        );
+        for text in [
+            "Found Example [Vendor.Other]\nVersion: 1.2.3",
+            "Found Example [Vendor.Example]\n  Version: 1.2.3",
+            "Found Example [Vendor.Example]\nDescription:\nVersion: 1.2.3",
+            "Found Example [Vendor.Example]\nVersion: Unknown",
+            "Found Example [Vendor.Example]\nVersion: --help",
+        ] {
+            assert_eq!(show_version(text, id), None, "{text}");
+        }
+    }
     const TRUSTED_SOURCE: &str = r#"{"Name":"winget","Arg":"https://cdn.winget.microsoft.com/cache","Identifier":"Microsoft.Winget.Source_8wekyb3d8bbwe","Type":"Microsoft.PreIndexed.Package","TrustLevel":["Trusted","StoreOrigin"]}"#;
 
     fn output(text: &str) -> Output {

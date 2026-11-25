@@ -6,7 +6,7 @@ SlimStore is an independent project made by NaeTech.
 
 ## Download and run
 
-Open the repository’s **Releases** tab and download **SlimStore.exe**. The first stable release is **1.0.0** and Windows displays **1.0.0.0**. Run the EXE directly or copy it to another folder or drive. The release also includes the matching source archive and SHA-256 checksums. [Changelog](CHANGELOG.md)
+Download **SlimStore.exe** from [Releases](https://github.com/nmd-113/SlimStore/releases). The current release is **1.0.1** and Windows displays **1.0.1.0**. Run the EXE directly, rename it, or copy it to another folder or drive. Keep the optional `SlimStore-data` folder alongside the EXE to carry saved settings and caches. The release includes the matching source archive and SHA-256 checksums. [Changelog](CHANGELOG.md)
 
 SlimStore requires Windows 10/11 x64 and uses the registered Microsoft App Installer package with the default Microsoft WinGet community source. Validation used WinGet 1.29.380. SlimStore also starts without WinGet and provides Microsoft’s setup and repair link in Settings.
 
@@ -16,22 +16,24 @@ SlimStore requires Windows 10/11 x64 and uses the registered Microsoft App Insta
 - Light, dark, and system themes, a theme-aware border on Windows 10, and a scrollbar gutter that only takes space when browsing results overflow.
 - 36 picks on Home and 136 curated packages resolved by exact ID against WinGet, with 14 subject categories and editorial collections in Discover.
 - Debounced WinGet search with embedded matches while WinGet responds. A confirmed empty result searches Scoop Main and Extras. **Also search Scoop** is available alongside WinGet results or when WinGet is unavailable.
-- Structured catalog descriptions, license, website, and release links where available. Details also show live version and installation state, and expandable localized WinGet output.
-- Visible results resolve icons on demand from local Scoop apps, checksum-pinned indexes, exact WinGet manifests and verified publisher or project sources. Six attributed screenshots remain available offline. [Artwork and attribution](docs/ARTWORK.md)
+- Details reuse descriptions already loaded for search cards and display WinGet metadata as it arrives, including the publisher, license, links, and catalog version. View the installation state and expand the full WinGet output when needed.
+- Grid and list results show curated or Scoop descriptions where available. With online artwork enabled, cards can also use the exact WinGet package manifest. Opening Details makes its live description available to the same package in the current session.
+- Visible results resolve icons on demand from local Scoop apps, checksum-pinned indexes, exact WinGet manifests and verified publisher or project sources. Details can look up screenshots from verified project sources on request, including for live search results. [Artwork and attribution](docs/ARTWORK.md)
 - Select apps across Home, Discover, Categories, and live search. **Review selection** opens **Install Queue**, where you can remove apps or inspect Details. **Install selected** verifies the remaining choices and opens one confirmation.
 - Grid and List show installation status and version. The catalog includes offline version snapshots, and the system WinGet inventory supplies installed versions.
 - Select multiple entries in Installed Apps, then choose **Uninstall selected** for a verified group review. Updates also support selected or all eligible upgrades.
 - Serial operation queue with exact-version review, preflight and post-operation checks, duplicate protection, and bounded session history. Downloads offers a fresh review after file locks clear and can pause waiting work while another installer runs.
 - **Install Scoop** opens the official setup guide after explaining the per-user installation. **Check for Scoop** detects it without restarting SlimStore.
-- Settings and catalog indexes stay in memory by default. Saving settings and caching the Scoop catalog beside the executable are separate options.
+- Click an eligible card or row to select it, or use its checkbox. The Details button opens the package overview.
+- Settings, icons, and catalog indexes stay in memory by default. Portable storage options are in Settings.
 
 Package actions change the host system even though SlimStore itself is portable. WinGet and publisher installers may request UAC, require a restart, use system storage, and manage their own logs/settings. Review the publisher's agreements before confirming a change.
 
 ## Portable architecture
 
-The SlimStore logo, Slint UI, offline screenshots, curated metadata, and small checksum-pinned artwork indexes are embedded at compile time. Package icons and Scoop bucket data load on demand. Slint uses Winit and its software renderer, and the MSVC CRT is statically linked. The app can run from a read-only folder.
+The SlimStore logo, Slint UI, curated metadata, and small checksum-pinned artwork indexes are embedded at compile time. Package icons, screenshots, and Scoop bucket data load on demand. Slint uses Winit and its software renderer, and the MSVC CRT is statically linked. The app can run from a read-only folder.
 
-Opt-in settings live in `SlimStore-data/settings.json` beside `SlimStore.exe`. The separate Scoop cache option stores compact, replaceable Main and Extras indexes in the same data folder. Unavailable storage falls back to memory. Icon and activity data stay in memory. Moving the EXE by itself starts a fresh session.
+**Save settings locally** stores settings in `SlimStore-data/settings.json` beside `SlimStore.exe`. With saved settings enabled, **Cache app icon and data locally** saves newly loaded icons and public package details on close in `icons-v1.bin` and `app-data-v1.bin` in the same folder. SlimStore can reuse these for matching packages with online artwork fetching disabled. Installation state and package actions use live checks. The separate Scoop cache option stores compact Main and Extras indexes. Unavailable storage falls back to memory. Activity stays in memory. Moving the EXE by itself starts a fresh session.
 
 ### Scoop fallback
 
@@ -58,7 +60,7 @@ cargo test --locked live_ -- --ignored --nocapture  # live read-only package and
 cargo build --release --locked
 ```
 
-The release compiler output is `target/x86_64-pc-windows-msvc/release/SlimStore.exe`. The build script copies only that file into `dist/`. `Cargo.lock` pins dependencies. `.cargo/config.toml` selects x64 MSVC and the static CRT; the release profile enables LTO and strips debug information.
+The release compiler output is `target/x86_64-pc-windows-msvc/release/SlimStore.exe`. The build script copies that file into `dist/` and accepts the optional `SlimStore-data` folder there for local use. Share the EXE itself as the portable release. `Cargo.lock` pins dependencies. `.cargo/config.toml` selects x64 MSVC and the static CRT; the release profile enables LTO and strips debug information.
 
 To sign a distribution build, make Windows SDK `signtool.exe` available in the developer shell. Pass `-SigningThumbprint` with the publisher’s code-signing certificate from the current user certificate store and `-TimestampUrl` with its RFC 3161 endpoint. The build verifies the staged signature before copying it into `dist/` and prints the final SHA-256 hash.
 
@@ -77,10 +79,12 @@ src/scoop_catalog.rs bounded Scoop bucket index and search
 src/operations.rs    serial queue, cancellation, diagnostic history
 src/packages.rs      package identities, matching and eligible update state
 src/metadata.rs      embedded collections, categories and text normalization
-src/icons.rs         verified catalog and local Scoop artwork with in-memory caching
+src/icons.rs         icon loading, local Scoop artwork, and in-memory caching
+src/icon_cache.rs    optional portable icon and package metadata caches
 src/icon_discovery.rs exact package metadata and project artwork discovery
+src/screenshots.rs   on-demand screenshots from checksum-pinned sources
 src/http.rs          bounded WinHTTP reads and SHA-256 checking
-src/storage.rs       optional portable settings, memory fallback
+src/storage.rs       portable settings and cache file storage
 src/platform.rs      Windows theme, links, COM probe and file replacement
 src/chrome.rs        Native Win32 caption, drag and resize handling
 src/errors.rs        WinGet error messages
@@ -98,7 +102,7 @@ release/             generated source ZIP and checksums
 
 - WinGet manages the community `winget` source. Scoop search covers Main, Extras, and opted-in local buckets. In-app Scoop installs cover verified x64 packages from Main and Extras. Configured WinGet sources are shown in Settings.
 - WinGet exposes search and inventory as tables on this client. The adapter reads the displayed columns and rejects unsupported layouts. Details retain WinGet’s localized output. Future formats may require adapter updates.
-- Structured descriptions, license and links are from the embedded catalog snapshot. Expand WinGet output for the current localized metadata. Packages without a trustworthy icon use initials.
+- Details fill gaps in curated descriptions and labels from recognized live WinGet fields and prefer safe HTTPS links from the current response. Expand WinGet output for the full localized metadata. Packages without a trustworthy icon use initials.
 - Live search and tag queries are limited to 250 matches per request. Use category, name, or ID to narrow broad queries. Unmapped packages appear under Other.
 - Ratings, download statistics, and recent-update rankings are omitted because there is no verified provider for comparable data.
 - Queued operations can be canceled. Closing also cancels pending verification. SlimStore lets a running installer finish and displays a warning after 45 minutes.
@@ -108,7 +112,7 @@ release/             generated source ZIP and checksums
 
 ## Privacy and licensing
 
-SlimStore has no analytics or telemetry client. With online icons enabled, visible cards can request exact package metadata and artwork from WinGet, GitHub, and verified project hosts. SlimStore keeps decoded icons in memory. Turn off **Load verified app icons online** to use local Scoop artwork and initials. An on-demand Scoop catalog refresh requests bucket data from GitHub and searches locally. System WinGet controls its own telemetry. [Microsoft WinGet settings](https://github.com/microsoft/winget-cli/blob/master/doc/Settings.md#telemetry)
+SlimStore has no analytics or telemetry client. **Load app icons and descriptions online** allows visible cards to request exact package metadata and artwork from WinGet, GitHub, and verified project hosts. Turn it off to skip these background requests for cards. **Load screenshots online** can contact GitHub and verified project hosts when clicked. An on-demand Scoop catalog refresh requests bucket data from GitHub and searches locally. System WinGet controls its own telemetry. [Microsoft WinGet settings](https://github.com/microsoft/winget-cli/blob/master/doc/Settings.md#telemetry)
 
 SlimStore source is licensed under [GPL-3.0-only](LICENSE). Slint is used under its GPL-3.0-only option. Dependency names, versions, license declarations, and upstream source links are listed in [third-party notices](docs/THIRD-PARTY.md). Supplied SlimStore artwork is retained as provided; no additional rights are asserted over that artwork. Package names and trademarks belong to their respective owners. No proprietary store assets or fabricated app statistics are included.
 
